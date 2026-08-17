@@ -59,19 +59,19 @@ sel_ciudad = st.sidebar.selectbox("🏙️ Vista / Ciudad:", opciones_vista)
 sel_horizonte = st.sidebar.selectbox("📅 Horizonte de Proyección:", ['Resto del Mes (MTD)', 'Próximos 15 días', 'Próximos 30 días'])
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("📈 Efecto Calendario & Quincena")
+st.sidebar.subheader("📈 Modificadores de Demanda")
 aplica_quincena = st.sidebar.checkbox("💰 ¿Activar Pico de Quincena?", value=True)
 pct_impacto = st.sidebar.slider("Uplift Quincena (%):", min_value=0.0, max_value=0.60, value=0.25, step=0.01,
-                                 help="Aumento porcentual en órdenes aplicado EXCLUSIVAMENTE a los días de quincena (14-16 y 29-2).")
+                                 help="Aumento porcentual en órdenes aplicado a los días de quincena (14-16 y 29-2).")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🎯 Metas Operativas y Financieras")
-# Rango centrado en tus metas reales: 1.6 - 1.7 UTR y $1.33 CPO
+# Rango enfocado en metas reales de VE (1.6 - 1.7 UTR y $1.33 CPO)
 target_utr = st.sidebar.slider("Target UTR (Órdenes/Hora):", min_value=1.20, max_value=2.50, value=1.65, step=0.05)
 target_cpo = st.sidebar.slider("Target CPO ($):", min_value=0.80, max_value=2.50, value=1.33, step=0.01)
 
 # -------------------------------------------------------------------------
-# 4. LÓGICA DE PROYECCIÓN Y MODELO QUINCENAL Y ESTACIONAL
+# 4. LÓGICA DE PROYECCIÓN BASADA EN ÓRDENES REALES + QUINCENA + ESTACIONALIDAD
 # -------------------------------------------------------------------------
 if sel_ciudad == 'TODAS (TOTAL VENEZUELA)':
     df_hist = df_real.groupby('ds_date').agg({
@@ -97,7 +97,7 @@ df_60d = df_hist[df_hist['ds_date'] >= (max_fecha - pd.Timedelta(days=60))].copy
 inicio_mes_actual = max_fecha.replace(day=1)
 df_mtd = df_60d[df_60d['ds_date'] >= inicio_mes_actual]
 
-# Horizonte
+# Cálculo de horizonte
 if sel_horizonte == 'Resto del Mes (MTD)':
     ultimo_dia_mes = pd.date_range(start=inicio_mes_actual, periods=1, freq='ME')[0]
     dias_a_proyectar = (ultimo_dia_mes - max_fecha).days
@@ -108,24 +108,29 @@ elif sel_horizonte == 'Próximos 15 días':
 else:
     dias_a_proyectar = 30
 
-# MODELO: DÍA DE LA SEMANA + EFECTO QUINCENA CALENDARIO
+# MODELO: ALTO PESO EN ÓRDENES REALES HISTÓRICAS
 df_28d = df_hist[df_hist['ds_date'] >= (max_fecha - pd.Timedelta(days=28))].copy()
+
+# Combinación ponderada: 70% peso a órdenes reales recientes (EMA) + 30% a Forecast Base
+df_28d['orders_base_weighted'] = (df_28d['orders_real'] * 0.70) + (df_28d['orders_forecast_rooster'] * 0.30)
 df_28d['day_of_week'] = df_28d['ds_date'].dt.dayofweek
 
-dow_factors = df_28d.groupby('day_of_week')['orders_forecast_rooster'].mean().to_dict()
-overall_mean = df_28d['orders_forecast_rooster'].mean() if len(df_28d) > 0 else 1.0
+# Factor promedio por día de la semana basado en la combinación con peso en REALES
+dow_factors = df_28d.groupby('day_of_week')['orders_base_weighted'].mean().to_dict()
+overall_mean = df_28d['orders_base_weighted'].mean() if len(df_28d) > 0 else 1.0
 
+# Generar proyección futura
 fechas_futuras = [max_fecha + pd.Timedelta(days=i+1) for i in range(dias_a_proyectar)]
 y_proj_future = []
 
-# Definición de días con efecto quincena (14,15,16, 29,30,31, 1,2)
+# Días con impacto de quincena (14-16 y 29-2)
 dias_quincena = {1, 2, 14, 15, 16, 29, 30, 31}
 
 for f in fechas_futuras:
     dow = f.dayofweek
     base_val = dow_factors.get(dow, overall_mean)
     
-    # Aplica el uplift SOLO si la fecha cae en periodo de quincena
+    # Aplica multiplicador de quincena en fechas clave
     if aplica_quincena and (f.day in dias_quincena):
         mult = 1.0 + float(pct_impacto)
     else:
@@ -150,7 +155,7 @@ accuracy_60d = 100.0 - ((np.abs(df_60d['orders_real'] - df_60d['orders_forecast_
 # 5. DASHBOARD PRINCIPAL
 # -------------------------------------------------------------------------
 st.title(f"🚀 Dashboard de Proyección Operativa | {plaza_label}")
-st.caption(f"Modelo: Estacionalidad Semanal + Calendario Quincenal. Horizonte: **{dias_a_proyectar} días**. Precisión histórica (Últ. 60D): **{accuracy_60d:.1f}%**.")
+st.caption(f"Modelo: Ponderación Real Histórica (70%) + Estacionalidad Semanal + Quincenas. Horizonte: **{dias_a_proyectar} días**.")
 
 kpi1, kpi2, kpi3, kpi4 = st.columns(4)
 
@@ -166,7 +171,7 @@ kpi4.metric(
 
 st.markdown("---")
 
-st.subheader("📈 Evolución Diaria: Histórico (Últimos 2 Meses) vs. Proyección Quincenal Futura")
+st.subheader("📈 Evolución Diaria: Histórico (Últimos 2 Meses) vs. Proyección Futura (Pesos Reales)")
 
 x_proj = [max_fecha] + fechas_futuras
 y_proj = [df_60d[df_60d['ds_date'] == max_fecha]['orders_real'].values[0]] + y_proj_future
@@ -188,7 +193,7 @@ fig.add_trace(go.Scatter(
     line=dict(color='#F59E0B', width=2, dash='dash')
 ))
 
-# Línea Roja de Proyección Futura Quincenal
+# Línea Roja de Proyección Futura con Peso en Reales y Quincenas
 fig.add_trace(go.Scatter(
     x=x_proj, y=y_proj,
     mode='lines+markers', name=f'Proyección Modelo ({dias_a_proyectar} días)',
