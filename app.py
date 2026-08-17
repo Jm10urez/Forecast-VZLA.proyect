@@ -106,7 +106,7 @@ if len(st.session_state['eventos_custom']) > 0:
         st.rerun()
 
 # -------------------------------------------------------------------------
-# 4. LÓGICA DE PROYECCIÓN CALIBRADA (~232K CON SÁBADO > DOMINGO)
+# 4. LÓGICA DE PROYECCIÓN CALIBRADA A EXACTAMENTE 232K (SÁBADO > DOMINGO)
 # -------------------------------------------------------------------------
 if sel_ciudad == 'TODAS (TOTAL VENEZUELA)':
     df_hist = df_real.groupby('ds_date').agg({
@@ -168,14 +168,13 @@ real_dow_std = df_28d_clean.groupby('dow')['orders_real'].std().to_dict()
 
 dict_eventos = {e['fecha']: e['impacto_pct'] for e in st.session_state['eventos_custom']}
 
-# PROYECCIÓN FUTURA CON REGLA ESTRICTA SÁBADO > DOMINGO (~232K)
+# FACTOR DE ESCALA AJUSTADO (+7% para lograr ~232,000 exactas)
+factor_escala_232k = 1.07
+
 y_proj_future = []
 np.random.seed(101)
 
-# Factor de escala ajustado exactamente para el nivel ~232K
-factor_escala_232k = 1.00
-
-ult_sabado_val = real_dow_avg.get(5, 8500)
+ult_sabado_val = real_dow_avg.get(5, 8500) * factor_escala_232k
 
 for f in fechas_futuras:
     dow = f.dayofweek
@@ -185,7 +184,7 @@ for f in fechas_futuras:
     ruido_organico = np.random.normal(0, std_dow * 0.15)
     dia_mes = f.day
     
-    # Quincena suelta por DOW
+    # Quincena por DOW
     if dia_mes in [14, 15, 16, 28, 29, 30, 31]:
         mult_q = 1.12 if dow == 5 else (1.08 if dow == 4 else 1.03)
     else:
@@ -198,7 +197,7 @@ for f in fechas_futuras:
     if dow == 5: # Sábado
         val_raw = (real_dow_avg.get(5, 8500) + ruido_organico) * factor_escala_232k * mult_q * mult_adhoc
         ult_sabado_val = val_raw
-    elif dow == 6: # Domingo (Strictly 86% of Saturday)
+    elif dow == 6: # Domingo (Estricto 86% del Sábado)
         val_raw = ult_sabado_val * 0.86
     else: # Resto de días
         val_raw = (real_dow_avg.get(dow, 7000) + ruido_organico) * factor_escala_232k * mult_q * mult_adhoc
@@ -226,7 +225,7 @@ delta_cpo = cpo_proyectado - target_cpo
 # 5. DASHBOARD PRINCIPAL
 # -------------------------------------------------------------------------
 st.title(f"🚀 Dashboard de Proyección Operativa | {plaza_label}")
-st.caption(f"Modelo Calibrado a ~232K (Jerarquía Estricta: Sábado > Domingo). MTD Acumulado: **{orders_acumuladas_mtd:,}**.")
+st.caption(f"Modelo Calibrado a Target ~232K (Sábado > Domingo). MTD Acumulado: **{orders_acumuladas_mtd:,}**.")
 
 kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
 
