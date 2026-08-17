@@ -2,8 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from google.cloud import bigquery
-from google.oauth2 import service_account
 
 # -------------------------------------------------------------------------
 # 1. CONFIGURACIÓN DE PÁGINA
@@ -33,86 +31,64 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # -------------------------------------------------------------------------
-# 2. CARGA DE DATOS DESDE BIGQUERY CON AUTENTICACIÓN EXPLÍCITA
-# -------------------------------------------------------------------------
-# -------------------------------------------------------------------------
-# 2. CARGA DE DATOS DESDE BIGQUERY
+# 2. CARGA DE DATOS CON STREAMLIT CONNECTION (BIGQUERY)
 # -------------------------------------------------------------------------
 @st.cache_data(ttl=3600)
 def cargar_datos_bigquery():
-    try:
-        # Validación directa de presencia de secretos
-        if not hasattr(st, "secrets") or len(st.secrets) == 0:
-            st.error("❌ No se encontraron Secrets configurados en Streamlit Cloud.")
-            st.stop()
+    # Inicializa la conexión nativa de Streamlit para BigQuery
+    conn = st.connection("bigquery", type="bigquery")
 
-        # Intenta obtener el bloque del Service Account (admite gcp_service_account o la raíz)
-        if "gcp_service_account" in st.secrets:
-            creds_dict = dict(st.secrets["gcp_service_account"])
-        else:
-            creds_dict = dict(st.secrets)
-
-        if "private_key" in creds_dict:
-            pk = creds_dict["private_key"]
-            pk = pk.replace("\\n", "\n").replace("\\_", "_")
-            creds_dict["private_key"] = pk
-
-        credentials = service_account.Credentials.from_service_account_info(creds_dict)
-        client = bigquery.Client(
-            credentials=credentials, 
-            project=creds_dict.get("project_id", "peya-venezuela")
-        )
-
-        sql_query = """
-        WITH 
-        daily_staffing AS (
-            SELECT 
-                DATE(SAFE_CAST(staffing.created_date_local AS TIMESTAMP)) AS ds_date,
-                staffing.city_name AS city_name,
-                SUM(staffing.adjusted_orders) AS orders_forecast_rooster,
-                SUM(staffing.orders_actuals) AS orders_real,
-                SUM(staffing.evaluations_working_time) / 3600.0 AS worked_hours
-            FROM `peya-data-origins-pro.cl_hurrier.staffing_kpi` AS staffing
-            WHERE SAFE_CAST(staffing.created_date_local AS TIMESTAMP) >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 180 DAY)
-              AND staffing.country_code = 've'
-            GROUP BY 1, 2
-        ),
-        daily_payments AS (
-            SELECT 
-                DATE(SAFE_CAST(payments.created_date AS TIMESTAMP)) AS ds_date,
-                SUM(payments.total_date_payment) AS rider_payments
-            FROM `peya-data-origins-pro.cl_hurrier.rider_payments` AS payments
-            WHERE SAFE_CAST(payments.created_date AS TIMESTAMP) >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 180 DAY)
-              AND payments.country_code = 've'
-            GROUP BY 1
-        )
+    sql_query = """
+    WITH 
+    daily_staffing AS (
         SELECT 
-            s.ds_date,
-            s.city_name,
-            s.orders_forecast_rooster,
-            s.orders_real,
-            ROUND(s.worked_hours, 2) AS worked_hours,
-            p.rider_payments,
-            ROUND(SAFE_DIVIDE(s.orders_real, s.worked_hours), 2) AS utr_diario,
-            ROUND(SAFE_DIVIDE(p.rider_payments, s.orders_real), 2) AS cpo_diario,
-            ROUND(SAFE_DIVIDE(p.rider_payments, s.worked_hours), 2) AS cph_diario
-        FROM daily_staffing s
-        LEFT JOIN daily_payments p ON s.ds_date = p.ds_date
-        ORDER BY s.ds_date ASC, s.city_name ASC;
-        """
-        
-        df = client.query(sql_query).to_dataframe()
-        
-        columnas_num = ['orders_forecast_rooster', 'orders_real', 'worked_hours', 'rider_payments', 'utr_diario', 'cpo_diario', 'cph_diario']
-        for col in columnas_num:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
-                
-        df['ds_date'] = pd.to_datetime(df['ds_date'])
-        return df
-    except Exception as e:
-        st.error(f"Error de autenticación o consulta en BigQuery: {e}")
-        st.stop()
+            DATE(SAFE_CAST(staffing.created_date_local AS TIMESTAMP)) AS ds_date,
+            staffing.city_name AS city_name,
+            SUM(staffing.adjusted_orders) AS orders_forecast_rooster,
+            SUM(staffing.orders_actuals) AS orders_real,
+            SUM(staffing.evaluations_working_time) / 3600.0 AS worked_hours
+        FROM `peya-data-origins-pro.cl_hurrier.staffing_kpi` AS staffing
+        WHERE SAFE_CAST(staffing.created_date_local AS TIMESTAMP) >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 180 DAY)
+          AND staffing.country_code = 've'
+        GROUP BY 1, 2
+    ),
+    daily_payments AS (
+        SELECT 
+            DATE(SAFE_CAST(payments.created_date AS TIMESTAMP)) AS ds_date,
+            SUM(payments.total_date_payment) AS rider_payments
+        FROM `peya-data-origins-pro.cl_hurrier.rider_payments` AS payments
+        WHERE SAFE_CAST(payments.created_date AS TIMESTAMP) >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 180 DAY)
+          AND payments.country_code = 've'
+        GROUP BY 1
+    )
+    SELECT 
+        s.ds_date,
+        s.city_name,
+        s.orders_forecast_rooster,
+        s.orders_real,
+        ROUND(s.worked_hours, 2) AS worked_hours,
+        p.rider_payments,
+        ROUND(SAFE_DIVIDE(s.orders_real, s.worked_hours), 2) AS utr_diario,
+        ROUND(SAFE_DIVIDE(p.rider_payments, s.orders_real), 2) AS cpo_diario,
+        ROUND(SAFE_DIVIDE(p.rider_payments, s.worked_hours), 2) AS cph_diario
+    FROM daily_staffing s
+    LEFT JOIN daily_payments p ON s.ds_date = p.ds_date
+    ORDER BY s.ds_date ASC, s.city_name ASC;
+    """
+    
+    df = conn.query(sql_query)
+    
+    columnas_num = ['orders_forecast_rooster', 'orders_real', 'worked_hours', 'rider_payments', 'utr_diario', 'cpo_diario', 'cph_diario']
+    for col in columnas_num:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+            
+    df['ds_date'] = pd.to_datetime(df['ds_date'])
+    return df
+
+with st.spinner("Conectando con BigQuery (peya-venezuela)..."):
+    df_real = cargar_datos_bigquery()
+
 # -------------------------------------------------------------------------
 # 3. CONTROLES SIDEBAR
 # -------------------------------------------------------------------------
@@ -248,3 +224,4 @@ with st.expander("📋 Ver detalle de datos en tabla"):
     df_display = df_60d[['ds_date', 'orders_real', 'orders_forecast_rooster', 'worked_hours', 'cph_diario']].copy()
     df_display.columns = ['Fecha', 'Órdenes Reales', 'Forecast Rooster', 'Horas Trabajadas', 'CPH ($)']
     st.dataframe(df_display.sort_values('Fecha', ascending=False), use_container_width=True)
+
