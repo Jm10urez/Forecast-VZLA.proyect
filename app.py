@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -65,10 +66,13 @@ pct_impacto = st.sidebar.slider("Incremental Vol. Quincena (%):", min_value=0.0,
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🎯 Metas Operativas y Financieras")
-target_utr = st.sidebar.slider("Target UTR (Órdenes/Hora):", min_value=1.5, max_value=4.5, value=2.8, step=0.1)
-target_cpo = st.sidebar.slider("Target CPO ($):", min_value=0.80, max_value=2.50, value=1.35, step=0.05)
+# Ajuste de rango de UTR entre 1.2 y 2.5 (centrado en la meta de 1.6 - 1.7)
+target_utr = st.sidebar.slider("Target UTR (Órdenes/Hora):", min_value=1.20, max_value=2.50, value=1.65, step=0.05)
+# Ajuste del Target CPO a $1.33 por defecto
+target_cpo = st.sidebar.slider("Target CPO ($):", min_value=0.80, max_value=2.50, value=1.33, step=0.01)
+
 # -------------------------------------------------------------------------
-# 4. LÓGICA DE PROYECCIÓN
+# 4. LÓGICA DE PROYECCIÓN Y MODELO DINÁMICO
 # -------------------------------------------------------------------------
 if sel_ciudad == 'TODAS (TOTAL VENEZUELA)':
     df_hist = df_real.groupby('ds_date').agg({
@@ -94,6 +98,7 @@ df_60d = df_hist[df_hist['ds_date'] >= (max_fecha - pd.Timedelta(days=60))].copy
 inicio_mes_actual = max_fecha.replace(day=1)
 df_mtd = df_60d[df_60d['ds_date'] >= inicio_mes_actual]
 
+# Cálculo del Horizonte
 if sel_horizonte == 'Resto del Mes (MTD)':
     ultimo_dia_mes = pd.date_range(start=inicio_mes_actual, periods=1, freq='ME')[0]
     dias_a_proyectar = (ultimo_dia_mes - max_fecha).days
@@ -104,13 +109,30 @@ elif sel_horizonte == 'Próximos 15 días':
 else:
     dias_a_proyectar = 30
 
-base_orders_dia = float(df_mtd['orders_forecast_rooster'].mean()) if len(df_mtd) > 0 else float(df_60d['orders_forecast_rooster'].mean())
-base_cph = float(df_mtd['cph_diario'].mean()) if len(df_mtd) > 0 else float(df_60d['cph_diario'].mean())
+# MODELO DE PROYECCIÓN PONDERADO POR DÍA DE LA SEMANA (4 ÚLTIMAS SEMANAS)
+df_28d = df_hist[df_hist['ds_date'] >= (max_fecha - pd.Timedelta(days=28))].copy()
+df_28d['day_of_week'] = df_28d['ds_date'].dt.dayofweek
 
+# Factor promedio por día de la semana (Lunes=0, Domingo=6)
+dow_factors = df_28d.groupby('day_of_week')['orders_forecast_rooster'].mean().to_dict()
+overall_mean = df_28d['orders_forecast_rooster'].mean() if len(df_28d) > 0 else 1.0
+
+# Generar secuencia futura con estacionalidad diaria
+fechas_futuras = [max_fecha + pd.Timedelta(days=i+1) for i in range(dias_a_proyectar)]
 mult_vol = 1.0 + (float(pct_impacto) if aplica_quincena else 0.0)
-orders_dia_proyectadas = base_orders_dia * mult_vol
-orders_totales_proyectadas = int(orders_dia_proyectadas * dias_a_proyectar)
 
+y_proj_future = []
+for f in fechas_futuras:
+    dow = f.dayofweek
+    base_dow = dow_factors.get(dow, overall_mean)
+    val_proyectado = base_dow * mult_vol
+    y_proj_future.append(val_proyectado)
+
+# Totales proyectados
+orders_totales_proyectadas = int(sum(y_proj_future))
+orders_dia_promedio = orders_totales_proyectadas / dias_a_proyectar if dias_a_proyectar > 0 else 0
+
+base_cph = float(df_mtd['cph_diario'].mean()) if len(df_mtd) > 0 and df_mtd['cph_diario'].mean() > 0 else float(df_60d['cph_diario'].mean())
 horas_totales_requeridas = int(orders_totales_proyectadas / target_utr) if target_utr > 0 else 0
 costo_total_pago = horas_totales_requeridas * base_cph
 cpo_proyectado = costo_total_pago / orders_totales_proyectadas if orders_totales_proyectadas > 0 else 0.0
@@ -122,13 +144,13 @@ accuracy_60d = 100.0 - ((np.abs(df_60d['orders_real'] - df_60d['orders_forecast_
 # 5. DASHBOARD PRINCIPAL
 # -------------------------------------------------------------------------
 st.title(f"🚀 Dashboard de Proyección Operativa | {plaza_label}")
-st.caption(f"Datos locales cargados. Horizonte: **{dias_a_proyectar} días**. Precisión del modelo (Últ. 60D): **{accuracy_60d:.1f}%**.")
+st.caption(f"Modelo: Estacional por Día de la Semana + Modificador de Demanda. Horizonte: **{dias_a_proyectar} días**. Precisión histórica (Últ. 60D): **{accuracy_60d:.1f}%**.")
 
 kpi1, kpi2, kpi3, kpi4 = st.columns(4)
 
-kpi1.metric("📦 Órdenes Proyectadas", f"{orders_totales_proyectadas:,}", f"{int(orders_dia_proyectadas):,}/día")
-kpi2.metric("⏱️ Horas Requeridas", f"{horas_totales_requeridas:,}", f"{int(horas_totales_requeridas/dias_a_proyectar):,}/día")
-kpi3.metric("💵 Gasto Total Riders", f"${costo_total_pago:,.2f}", f"CPH: ${base_cph:.2f}/h")
+kpi1.metric("📦 Órdenes Proyectadas", f"{orders_totales_proyectadas:,}", f"{int(orders_dia_promedio):,}/día promedio")
+kpi2.metric("⏱️ Horas Requeridas", f"{horas_totales_requeridas:,}", f"Target UTR: {target_utr:.2f}")
+kpi3.metric("💵 Gasto Total Riders", f"${costo_total_pago:,.2f}", f"CPH Base: ${base_cph:.2f}/h")
 kpi4.metric(
     "📉 CPO Proyectado", 
     f"${cpo_proyectado:.2f}", 
@@ -138,14 +160,14 @@ kpi4.metric(
 
 st.markdown("---")
 
-st.subheader("📈 Evolución Diaria: Histórico (Últimos 2 Meses) vs. Proyección Futura")
+st.subheader("📈 Evolución Diaria: Histórico (Últimos 2 Meses) vs. Proyección Dinámica Futura")
 
-fechas_futuras = [max_fecha + pd.Timedelta(days=i+1) for i in range(dias_a_proyectar)]
 x_proj = [max_fecha] + fechas_futuras
-y_proj = [df_60d[df_60d['ds_date'] == max_fecha]['orders_real'].values[0]] + [orders_dia_proyectadas] * dias_a_proyectar
+y_proj = [df_60d[df_60d['ds_date'] == max_fecha]['orders_real'].values[0]] + y_proj_future
 
 fig = go.Figure()
 
+# Línea Histórica Reales
 fig.add_trace(go.Scatter(
     x=df_60d['ds_date'], y=df_60d['orders_real'],
     mode='lines+markers', name='Órdenes Reales (Histórico + MTD)',
@@ -153,15 +175,17 @@ fig.add_trace(go.Scatter(
     marker=dict(size=4)
 ))
 
+# Línea Forecast Base
 fig.add_trace(go.Scatter(
     x=df_60d['ds_date'], y=df_60d['orders_forecast_rooster'],
-    mode='lines', name='Forecast Rooster (Base)',
+    mode='lines', name='Forecast Rooster Base',
     line=dict(color='#F59E0B', width=2, dash='dash')
 ))
 
+# Línea Roja de Proyección Futura Dinámica
 fig.add_trace(go.Scatter(
     x=x_proj, y=y_proj,
-    mode='lines+markers', name=f'Proyección Futura ({dias_a_proyectar} días)',
+    mode='lines+markers', name=f'Proyección Modelo ({dias_a_proyectar} días)',
     line=dict(color='#E31837', width=3, dash='dot'),
     marker=dict(size=6, symbol='diamond')
 ))
@@ -176,8 +200,7 @@ fig.update_layout(
 
 st.plotly_chart(fig, use_container_width=True)
 
-with st.expander("📋 Ver detalle de datos en tabla"):
+with st.expander("📋 Ver detalle de datos históricos y proyecciones en tabla"):
     df_display = df_60d[['ds_date', 'orders_real', 'orders_forecast_rooster', 'worked_hours', 'cph_diario']].copy()
     df_display.columns = ['Fecha', 'Órdenes Reales', 'Forecast Rooster', 'Horas Trabajadas', 'CPH ($)']
     st.dataframe(df_display.sort_values('Fecha', ascending=False), use_container_width=True)
-   
