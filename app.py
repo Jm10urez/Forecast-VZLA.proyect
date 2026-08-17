@@ -4,7 +4,7 @@ import numpy as np
 import plotly.graph_objects as go
 
 # -------------------------------------------------------------------------
-# 1. CONFIGURACIÓN DE PÁGINA
+# 1. CONFIGURACIÓN DE PÁGINA Y ESTILOS
 # -------------------------------------------------------------------------
 st.set_page_config(
     page_title="Simulador Operativo | PedidosYa VE",
@@ -182,7 +182,7 @@ estimacion_cierre_mes = orders_acumuladas_mtd + orders_totales_proyectadas if se
 # -------------------------------------------------------------------------
 # 5. DASHBOARD PRINCIPAL
 # -------------------------------------------------------------------------
-st.title("🚀 Dashboard de Proyección Operativa | Matriz Rooster")
+st.title("🚀 Dashboard de Proyección Operativa | Vista Comparativa")
 st.caption(f"Filtros Activos: Ciudad: **{sel_ciudad}** | Zona: **{sel_zona}** | Hora: **{sel_hora}**")
 
 kpi1, kpi2, kpi3 = st.columns(3)
@@ -193,10 +193,8 @@ kpi3.metric("🎯 Target UTR", f"{target_utr:.2f}")
 st.markdown("---")
 
 # -------------------------------------------------------------------------
-# 6. MATRIZ ROOSTER CON NATIVE STREAMLIT LAYOUT (IMPECABLE Y LIMPIO)
+# 6. CONSTRUCCIÓN DE LOS DOS CUADROS INDEPENDIENTES
 # -------------------------------------------------------------------------
-st.subheader("📅 Matriz Semanal Comparativa (Rooster Base vs. Modelo Ajustado)")
-
 df_grid_hist = df_hist[['ds_date', 'orders_forecast_rooster', 'orders_real']].copy()
 df_grid_hist.columns = ['ds_date', 'rooster', 'sugerido']
 
@@ -219,11 +217,43 @@ dias_espanol = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado',
 
 semanas_unicas = sorted(df_grid_all['week_start'].unique(), reverse=True)[:5]
 
-# Renderizado mediante Columnas de Streamlit nativo (Cero errores de HTML/string)
-headers = st.columns([1.2, 1, 1, 1, 1, 1, 1, 1])
-headers[0].markdown("**Semana**")
+# --- CUADRO 1: FORECAST BASE DE ROOSTER ---
+st.subheader("📊 1. Forecast Base de Rooster")
+
+headers_r = st.columns([1.2, 1, 1, 1, 1, 1, 1, 1])
+headers_r[0].markdown("**Semana**")
 for idx, d_es in enumerate(dias_espanol):
-    headers[idx + 1].markdown(f"**{d_es}**")
+    headers_r[idx + 1].markdown(f"**{d_es}**")
+
+st.divider()
+
+for sem in semanas_unicas:
+    cols = st.columns([1.2, 1, 1, 1, 1, 1, 1, 1])
+    cols[0].markdown(f"🗓️ **{sem.strftime('%Y-%m-%d')}**")
+    
+    df_sem = df_grid_all[df_grid_all['week_start'] == sem]
+    
+    for idx, dow in enumerate(dias_semana):
+        match = df_sem[df_sem['dow_name'] == dow]
+        col_target = cols[idx + 1]
+        
+        if len(match) > 0:
+            val_rooster = match['rooster'].values[0]
+            with col_target.container(border=True):
+                st.caption("Rooster")
+                st.markdown(f"**{int(val_rooster):,}**")
+        else:
+            col_target.caption("-")
+
+st.markdown("<br><br>", unsafe_allow_html=True)
+
+# --- CUADRO 2: SUGERIDO DEL MODELO (AJUSTADO) ---
+st.subheader("📈 2. Sugerido del Modelo (Calibrado)")
+
+headers_s = st.columns([1.2, 1, 1, 1, 1, 1, 1, 1])
+headers_s[0].markdown("**Semana**")
+for idx, d_es in enumerate(dias_espanol):
+    headers_s[idx + 1].markdown(f"**{d_es}**")
 
 st.divider()
 
@@ -246,8 +276,8 @@ for sem in semanas_unicas:
             color_pct = "green" if var_pct >= 0 else "red"
             
             with col_target.container(border=True):
-                st.caption(f"Rooster: **{int(val_rooster):,}**")
-                st.markdown(f"**{int(val_sug):,}**")
+                st.caption("Sugerido")
+                st.markdown(f"**:blue[{int(val_sug):,}]**")
                 st.markdown(f":{color_pct}[**{signo}{var_pct:.1f}%**]")
         else:
             col_target.caption("-")
