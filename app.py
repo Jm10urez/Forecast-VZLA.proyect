@@ -106,7 +106,7 @@ if len(st.session_state['eventos_custom']) > 0:
         st.rerun()
 
 # -------------------------------------------------------------------------
-# 4. LÓGICA DE PROYECCIÓN CALIBRADA EN VENTANA [238K - 240K]
+# 4. LÓGICA DE PROYECCIÓN Y CÁLCULO MTD [238K - 240K]
 # -------------------------------------------------------------------------
 if sel_ciudad == 'TODAS (TOTAL VENEZUELA)':
     df_hist = df_real.groupby('ds_date').agg({
@@ -141,8 +141,10 @@ else:
     ultimo_val_real = df_hist[df_hist['ds_date'] == max_fecha_real]['orders_forecast_rooster'].values[0]
 
 df_60d = df_hist[(df_hist['ds_date'] >= (max_fecha_real - pd.Timedelta(days=60))) & (df_hist['ds_date'] <= max_fecha_real)].copy()
+
+# Fix de extracción MTD
 inicio_mes_actual = max_fecha_real.replace(day=1)
-df_mtd = df_60d[(df_60d['ds_date'] >= inicio_mes_actual) & (df_60d['orders_real'] >= p_limite_inf)]
+df_mtd = df_valid_reales[(df_valid_reales['ds_date'] >= inicio_mes_actual) & (df_valid_reales['ds_date'] <= max_fecha_real)]
 orders_acumuladas_mtd = int(df_mtd['orders_real'].sum())
 
 # Horizonte
@@ -170,8 +172,8 @@ val_domingo = real_dow_avg.get(6, df_28d_clean['orders_real'].mean())
 if val_domingo >= val_sabado:
     real_dow_avg[6] = val_sabado * 0.88
 
-# CALIBRACIÓN EXACTA A RANGO [238K - 240K] (+3.03%)
-factor_calibracion_target = 1.0303
+# FACTOR AJUSTADO A VENTANA OBJETIVO [238K - 240K] (+8.5%)
+factor_calibracion_target = 1.085
 
 max_historico_real = df_valid_reales['orders_real'].max() if len(df_valid_reales) > 0 else 9600.0
 dict_eventos = {e['fecha']: e['impacto_pct'] for e in st.session_state['eventos_custom']}
@@ -220,7 +222,11 @@ for i, f in enumerate(fechas_futuras):
 orders_totales_proyectadas = int(sum(y_proj_future))
 orders_dia_promedio = orders_totales_proyectadas / dias_a_proyectar if dias_a_proyectar > 0 else 0
 
-estimacion_cierre_mes = orders_acumuladas_mtd + orders_totales_proyectadas if sel_horizonte == 'Resto del Mes (MTD)' else orders_totales_proyectadas
+# Estimación cierre total
+if sel_horizonte == 'Resto del Mes (MTD)' and orders_acumuladas_mtd > 0:
+    estimacion_cierre_mes = orders_acumuladas_mtd + orders_totales_proyectadas
+else:
+    estimacion_cierre_mes = orders_totales_proyectadas
 
 base_cph = float(df_mtd['cph_diario'].mean()) if len(df_mtd) > 0 and df_mtd['cph_diario'].mean() > 0 else float(df_60d['cph_diario'].mean())
 horas_totales_requeridas = int(orders_totales_proyectadas / target_utr) if target_utr > 0 else 0
