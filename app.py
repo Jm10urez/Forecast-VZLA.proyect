@@ -61,7 +61,8 @@ sel_horizonte = st.sidebar.selectbox("📅 Horizonte de Proyección:", ['Resto d
 st.sidebar.markdown("---")
 st.sidebar.subheader("📈 Modificadores de Demanda")
 aplica_quincena = st.sidebar.checkbox("💰 ¿Aplica Efecto Quincena?", value=True)
-pct_impacto = st.sidebar.slider("Uplift Quincena (%):", min_value=0.0, max_value=0.50, value=0.15, step=0.01)
+pct_impacto = st.sidebar.slider("Uplift Quincena Base (%):", min_value=0.0, max_value=0.50, value=0.22, step=0.01,
+                                 help="Aumento aplicado en días de quincena (14-16 y 29-2). Los viernes de quincena reciben un boost adicional automático.")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🎯 Metas Operativas y Financieras")
@@ -69,7 +70,7 @@ target_utr = st.sidebar.slider("Target UTR (Órdenes/Hora):", min_value=1.20, ma
 target_cpo = st.sidebar.slider("Target CPO ($):", min_value=0.80, max_value=2.50, value=1.33, step=0.01)
 
 # -------------------------------------------------------------------------
-# 4. LÓGICA DE PROYECCIÓN PROTEGIDA CONTRA DÍAS EN CERO
+# 4. LÓGICA DE PROYECCIÓN CON BOOST DE VIERNES DE QUINCENA
 # -------------------------------------------------------------------------
 if sel_ciudad == 'TODAS (TOTAL VENEZUELA)':
     df_hist = df_real.groupby('ds_date').agg({
@@ -91,7 +92,7 @@ else:
 
 df_hist = df_hist.sort_values('ds_date').copy()
 
-# Determinamos la última fecha con datos REALES VÁLIDOS (> 0)
+# Filtrar días operados verdaderamente (> 0)
 df_valid_reales = df_hist[df_hist['orders_real'] > 0]
 
 if len(df_valid_reales) > 0:
@@ -99,12 +100,12 @@ if len(df_valid_reales) > 0:
 else:
     max_fecha_real = df_hist['ds_date'].max()
 
-# Recortamos la historia hasta el último día operado verdaderamente
+# Recortamos la historia hasta la fecha válida
 df_60d = df_hist[(df_hist['ds_date'] >= (max_fecha_real - pd.Timedelta(days=60))) & (df_hist['ds_date'] <= max_fecha_real)].copy()
 inicio_mes_actual = max_fecha_real.replace(day=1)
 df_mtd = df_60d[df_60d['ds_date'] >= inicio_mes_actual]
 
-# Horizonte de proyección a partir del último día con data válida
+# Horizonte
 if sel_horizonte == 'Resto del Mes (MTD)':
     ultimo_dia_mes = pd.date_range(start=inicio_mes_actual, periods=1, freq='ME')[0]
     dias_a_proyectar = (ultimo_dia_mes - max_fecha_real).days
@@ -115,7 +116,7 @@ elif sel_horizonte == 'Próximos 15 días':
 else:
     dias_a_proyectar = 30
 
-# CALCULO DE EJECUCIÓN REAL VS ROOSTER (FILTRANDO CEROS)
+# CALCULO DE EJECUCIÓN REAL VS ROOSTER (Últimos 28 días válidos)
 df_valid_28d = df_valid_reales[df_valid_reales['ds_date'] >= (max_fecha_real - pd.Timedelta(days=28))].copy()
 
 if len(df_valid_28d) > 0 and df_valid_28d['orders_forecast_rooster'].sum() > 0:
@@ -123,12 +124,11 @@ if len(df_valid_28d) > 0 and df_valid_28d['orders_forecast_rooster'].sum() > 0:
 else:
     ratio_ejecucion = 1.0
 
-# PROYECCIÓN CONTINUA
+# PROYECCIÓN CON PICO ESPECIAL EN VIERNES DE QUINCENA
 fechas_futuras = [max_fecha_real + pd.Timedelta(days=i+1) for i in range(dias_a_proyectar)]
 y_proj_future = []
 dias_quincena = {1, 2, 14, 15, 16, 29, 30, 31}
 
-# Buscamos en el dataframe general la base del rooster futura si existe, si no usamos patrón
 df_future_lookup = df_hist.set_index('ds_date')['orders_forecast_rooster'].to_dict()
 df_valid_28d['dow'] = df_valid_28d['ds_date'].dt.dayofweek
 rooster_dow_avg = df_valid_28d.groupby('dow')['orders_forecast_rooster'].mean().to_dict()
@@ -138,11 +138,21 @@ for f in fechas_futuras:
     if base_f == 0.0:
         base_f = rooster_dow_avg.get(f.dayofweek, df_valid_28d['orders_forecast_rooster'].mean())
     
-    mult_q = (1.0 + float(pct_impacto)) if (aplica_quincena and f.day in dias_quincena) else 1.0
+    # Lógica de multiplicador de quincena + diferenciación Viernes/Finde
+    if aplica_quincena and (f.day in dias_quincena):
+        if f.dayofweek == 4:  # Viernes
+            mult_q = 1.0 + float(pct_impacto) + 0.15  # Boost de +15% para viernes de quincena
+        elif f.dayofweek in [5, 6]:  # Sábado o Domingo
+            mult_q = 1.0 + float(pct_impacto) + 0.10  # Boost de +10% para fines de semana de quincena
+        else:
+            mult_q = 1.0 + float(pct_impacto)
+    else:
+        mult_q = 1.0
+
     val_proyectado = base_f * ratio_ejecucion * mult_q
     y_proj_future.append(val_proyectado)
 
-# Métricas finales
+# Totales y Métricas Operativas
 orders_totales_proyectadas = int(sum(y_proj_future))
 orders_dia_promedio = orders_totales_proyectadas / dias_a_proyectar if dias_a_proyectar > 0 else 0
 
@@ -158,7 +168,7 @@ accuracy_60d = 100.0 - ((np.abs(df_60d['orders_real'] - df_60d['orders_forecast_
 # 5. DASHBOARD PRINCIPAL
 # -------------------------------------------------------------------------
 st.title(f"🚀 Dashboard de Proyección Operativa | {plaza_label}")
-st.caption(f"Filtro Activo: Omisión de ceros operacionales. Último día real: **{max_fecha_real.strftime('%Y-%m-%d')}**. Ejecución histórica: **{ratio_ejecucion*100:.1f}%**.")
+st.caption(f"Modelo: Proyección con Boost de Viernes/Finde de Quincena. Último día real: **{max_fecha_real.strftime('%Y-%m-%d')}**.")
 
 kpi1, kpi2, kpi3, kpi4 = st.columns(4)
 
@@ -174,14 +184,14 @@ kpi4.metric(
 
 st.markdown("---")
 
-st.subheader("📈 Evolución Diaria: Histórico Reales vs. Proyección Sin Ceros Operacionales")
+st.subheader("📈 Evolución Diaria: Histórico Reales vs. Proyección Futura Ajustada")
 
 x_proj = [max_fecha_real] + fechas_futuras
 y_proj = [df_60d[df_60d['ds_date'] == max_fecha_real]['orders_real'].values[0]] + y_proj_future
 
 fig = go.Figure()
 
-# Línea Histórica Reales (Sin Ceros)
+# Línea Histórica Reales
 fig.add_trace(go.Scatter(
     x=df_60d['ds_date'], y=df_60d['orders_real'],
     mode='lines+markers', name='Órdenes Reales (Histórico Válido)',
@@ -196,7 +206,7 @@ fig.add_trace(go.Scatter(
     line=dict(color='#F59E0B', width=2, dash='dash')
 ))
 
-# Línea Roja Corregida
+# Línea Roja Ajustada con Picos de Viernes
 fig.add_trace(go.Scatter(
     x=x_proj, y=y_proj,
     mode='lines+markers', name=f'Proyección Modelo ({dias_a_proyectar} días)',
