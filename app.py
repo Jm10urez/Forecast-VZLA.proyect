@@ -61,16 +61,17 @@ sel_horizonte = st.sidebar.selectbox("📅 Horizonte de Proyección:", ['Resto d
 st.sidebar.markdown("---")
 st.sidebar.subheader("📈 Modificadores de Demanda")
 aplica_quincena = st.sidebar.checkbox("💰 ¿Aplica Efecto Quincena?", value=True)
-pct_impacto = st.sidebar.slider("Incremental Vol. Quincena (%):", min_value=0.0, max_value=0.50, value=0.20, step=0.01)
+pct_impacto = st.sidebar.slider("Uplift Quincena (%):", min_value=0.0, max_value=0.50, value=0.15, step=0.01,
+                                 help="Aumento aplicado a la base real en días de quincena (14-16 y 29-2).")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🎯 Metas Operativas y Financieras")
-# Rango enfocado en las metas reales de Venezuela (1.6 - 1.7 UTR y $1.33 CPO)
+# Metas reales ajustadas para Venezuela
 target_utr = st.sidebar.slider("Target UTR (Órdenes/Hora):", min_value=1.20, max_value=2.50, value=1.65, step=0.05)
 target_cpo = st.sidebar.slider("Target CPO ($):", min_value=0.80, max_value=2.50, value=1.33, step=0.01)
 
 # -------------------------------------------------------------------------
-# 4. LÓGICA DE PROYECCIÓN BASADA EN PATRÓN DE FORECAST ROOSTER
+# 4. LÓGICA DE PROYECCIÓN BASADA 100% EN ÓRDENES REALES RECIENTES
 # -------------------------------------------------------------------------
 if sel_ciudad == 'TODAS (TOTAL VENEZUELA)':
     df_hist = df_real.groupby('ds_date').agg({
@@ -107,33 +108,28 @@ elif sel_horizonte == 'Próximos 15 días':
 else:
     dias_a_proyectar = 30
 
-# CALIBRACIÓN SOBRE EL FORECAST DE ROOSTER (Últimos 28 Días)
-df_28d = df_hist[df_hist['ds_date'] >= (max_fecha - pd.Timedelta(days=28))].copy()
+# MODELO: PROMEDIO POR DÍA DE LA SEMANA TOMANDO LAS ÚLTIMAS 3 SEMANAS DE ÓRDENES REALES
+df_21d = df_hist[df_hist['ds_date'] >= (max_fecha - pd.Timedelta(days=21))].copy()
+df_21d['day_of_week'] = df_21d['ds_date'].dt.dayofweek
 
-# Calculamos el comportamiento histórico por día de la semana según el Forecast Rooster
-df_28d['day_of_week'] = df_28d['ds_date'].dt.dayofweek
-rooster_dow_pattern = df_28d.groupby('day_of_week')['orders_forecast_rooster'].mean().to_dict()
+# Patrón real por día de la semana (0=Lunes, 6=Domingo)
+real_dow_pattern = df_21d.groupby('day_of_week')['orders_real'].mean().to_dict()
+mean_real_21d = df_21d['orders_real'].mean() if len(df_21d) > 0 else 1.0
 
-# Factor de Realización / Ajuste (Órdenes Reales vs Forecast Rooster)
-sum_real_28d = df_28d['orders_real'].sum()
-sum_rooster_28d = df_28d['orders_forecast_rooster'].sum()
-ratio_realizacion = (sum_real_28d / sum_rooster_28d) if sum_rooster_28d > 0 else 1.0
-
-# Generación de curva futura imitando el Forecast de Rooster
+# Generar la secuencia futura conectando con la realidad
 fechas_futuras = [max_fecha + pd.Timedelta(days=i+1) for i in range(dias_a_proyectar)]
 y_proj_future = []
 
-# Días con pico quincenal (14-16 y 29-2)
+# Días con impacto de quincena (14-16 y 29-2)
 dias_quincena = {1, 2, 14, 15, 16, 29, 30, 31}
 
 for f in fechas_futuras:
     dow = f.dayofweek
-    # Toma la base del comportamiento del Forecast de Rooster para ese día de la semana
-    base_rooster = rooster_dow_pattern.get(dow, df_28d['orders_forecast_rooster'].mean())
+    base_real_day = real_dow_pattern.get(dow, mean_real_21d)
     
-    # Aplica ratio de realización histórica + modificador de quincena si aplica
+    # Aplica multiplicador de quincena únicamente en las fechas de cobro
     mult_q = (1.0 + float(pct_impacto)) if (aplica_quincena and f.day in dias_quincena) else 1.0
-    val_proyectado = base_rooster * ratio_realizacion * mult_q
+    val_proyectado = base_real_day * mult_q
     y_proj_future.append(val_proyectado)
 
 # Totales y Métricas Operativas
@@ -152,7 +148,7 @@ accuracy_60d = 100.0 - ((np.abs(df_60d['orders_real'] - df_60d['orders_forecast_
 # 5. DASHBOARD PRINCIPAL
 # -------------------------------------------------------------------------
 st.title(f"🚀 Dashboard de Proyección Operativa | {plaza_label}")
-st.caption(f"Modelo: Basado en el patrón de **Forecast Rooster** (Ajuste de ejecución: **{ratio_realizacion*100:.1f}%**). Horizonte: **{dias_a_proyectar} días**.")
+st.caption(f"Modelo: Estacionalidad sobre **Órdenes Reales Recientes** (Últimas 3 semanas). Horizonte: **{dias_a_proyectar} días**.")
 
 kpi1, kpi2, kpi3, kpi4 = st.columns(4)
 
@@ -168,7 +164,7 @@ kpi4.metric(
 
 st.markdown("---")
 
-st.subheader("📈 Evolución Diaria: Histórico (Últimos 2 Meses) vs. Proyección Estructurada por Forecast")
+st.subheader("📈 Evolución Diaria: Histórico Reales (Últimos 2 Meses) vs. Proyección Reales Futuras")
 
 x_proj = [max_fecha] + fechas_futuras
 y_proj = [df_60d[df_60d['ds_date'] == max_fecha]['orders_real'].values[0]] + y_proj_future
@@ -190,10 +186,10 @@ fig.add_trace(go.Scatter(
     line=dict(color='#F59E0B', width=2, dash='dash')
 ))
 
-# Línea Roja de Proyección Futura (Imitando la forma del Forecast Rooster)
+# Línea Roja de Proyección Futura (Nacida directamente del histórico real)
 fig.add_trace(go.Scatter(
     x=x_proj, y=y_proj,
-    mode='lines+markers', name=f'Proyección Modelo Forecast ({dias_a_proyectar} días)',
+    mode='lines+markers', name=f'Proyección Reales ({dias_a_proyectar} días)',
     line=dict(color='#E31837', width=3, dash='dot'),
     marker=dict(size=6, symbol='diamond')
 ))
