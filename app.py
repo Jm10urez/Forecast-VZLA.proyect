@@ -1,13 +1,3 @@
-# Reemplaza la parte inicial de cargar_datos_bigquery por esto:
-if "gcp_service_account" in st.secrets:
-    creds_dict = dict(st.secrets["gcp_service_account"])
-    if "private_key" in creds_dict:
-        # Limpia caracteres escapados por error al pegar
-        pk = creds_dict["private_key"]
-        pk = pk.replace("\\n", "\n").replace("\\_", "_")
-        creds_dict["private_key"] = pk
-        
-    client = bigquery.Client.from_service_account_info(creds_dict)
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -50,7 +40,9 @@ def cargar_datos_bigquery():
         if "gcp_service_account" in st.secrets:
             creds_dict = dict(st.secrets["gcp_service_account"])
             if "private_key" in creds_dict:
-                creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+                pk = creds_dict["private_key"]
+                pk = pk.replace("\\n", "\n").replace("\\_", "_")
+                creds_dict["private_key"] = pk
             client = bigquery.Client.from_service_account_info(creds_dict)
         else:
             client = bigquery.Client(project='peya-venezuela')
@@ -106,9 +98,32 @@ def cargar_datos_bigquery():
         st.error(f"Error al conectar con BigQuery: {e}")
         st.stop()
 
-# LLAMADA OBLIGATORIA A LA FUNCIÓN (Fuera de la definición)
+# Ejecución de carga de datos
 with st.spinner("Conectando con BigQuery..."):
     df_real = cargar_datos_bigquery()
+
+# -------------------------------------------------------------------------
+# 3. CONTROLES SIDEBAR
+# -------------------------------------------------------------------------
+st.sidebar.image("https://upload.wikimedia.org/wikipedia/commons/d/d6/PedidosYa_Logo.png", width=180)
+st.sidebar.title("⚙️ Parámetros de Simulación")
+
+ciudades_lista = sorted([str(c) for c in df_real['city_name'].dropna().unique() if str(c) not in ['None', 'nan']])
+opciones_vista = ['TODAS (TOTAL VENEZUELA)'] + ciudades_lista
+
+sel_ciudad = st.sidebar.selectbox("🏙️ Vista / Ciudad:", opciones_vista)
+sel_horizonte = st.sidebar.selectbox("📅 Horizonte de Proyección:", ['Resto del Mes (MTD)', 'Próximos 15 días', 'Próximos 30 días'])
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("📈 Modificadores de Demanda")
+aplica_quincena = st.sidebar.checkbox("💰 ¿Aplica Efecto Quincena?", value=True)
+pct_impacto = st.sidebar.slider("Incremental Vol. Quincena (%):", min_value=0.0, max_value=0.50, value=0.20, step=0.01)
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("🎯 Metas Operativas y Financieras")
+target_utr = st.sidebar.slider("Target UTR (Órdenes/Hora):", min_value=1.5, max_value=4.5, value=2.8, step=0.1)
+target_cpo = st.sidebar.slider("Target CPO ($):", min_value=0.80, max=2.50, value=1.35, step=0.05)
+
 # -------------------------------------------------------------------------
 # 4. LÓGICA DE PROYECCIÓN
 # -------------------------------------------------------------------------
