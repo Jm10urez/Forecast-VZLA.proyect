@@ -66,8 +66,7 @@ pct_impacto = st.sidebar.slider("Incremental Vol. Quincena (%):", min_value=0.0,
 st.sidebar.markdown("---")
 st.sidebar.subheader("🎯 Metas Operativas y Financieras")
 target_utr = st.sidebar.slider("Target UTR (Órdenes/Hora):", min_value=1.5, max_value=4.5, value=2.8, step=0.1)
-target_cpo = st.sidebar.slider("Target CPO ($):", min_value=0.80, max=2.50, value=1.35, step=0.05)
-
+target_cpo = st.sidebar.slider("Target CPO ($):", min_value=0.80, max_value=2.50, value=1.35, step=0.05)
 # -------------------------------------------------------------------------
 # 4. LÓGICA DE PROYECCIÓN
 # -------------------------------------------------------------------------
