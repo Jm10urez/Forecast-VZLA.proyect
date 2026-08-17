@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -6,7 +5,7 @@ import plotly.graph_objects as go
 from google.cloud import bigquery
 
 # -------------------------------------------------------------------------
-# 1. CONFIGURACIÓN DE PÁGINA E IDENTIDAD VISUAL (PEDIDOSYA)
+# 1. CONFIGURACIÓN DE PÁGINA
 # -------------------------------------------------------------------------
 st.set_page_config(
     page_title="Simulador Operativo | PedidosYa VE",
@@ -15,7 +14,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Estilos CSS personalizados (Color institucional Rojo PedidosYa)
 st.markdown("""
     <style>
     .main { background-color: #F8FAFC; }
@@ -26,9 +24,6 @@ st.markdown("""
         border: 1px solid #E2E8F0;
         box-shadow: 0 1px 3px rgba(0,0,0,0.05);
     }
-    .st-emotion-cache-1wivap2 {
-        border-left: 5px solid #E31837;
-    }
     div[data-testid="stSidebar"] {
         background-color: #FFFFFF;
         border-right: 1px solid #E2E8F0;
@@ -37,19 +32,14 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # -------------------------------------------------------------------------
-# 2. CONEXIÓN A BIGQUERY Y CARGA DE DATOS (CON CACHÉ)
-# -------------------------------------------------------------------------
-# -------------------------------------------------------------------------
-# 2. CARGA DE DATOS DESDE BIGQUERY CON SECRETS
+# 2. CARGA DE DATOS DESDE BIGQUERY
 # -------------------------------------------------------------------------
 @st.cache_data(ttl=3600)
 def cargar_datos_bigquery():
-    # Verifica si existen credenciales configuradas en Secrets
     if "gcp_service_account" in st.secrets:
         creds_dict = dict(st.secrets["gcp_service_account"])
         client = bigquery.Client.from_service_account_info(creds_dict)
     else:
-        # Modo por defecto para autenticación local
         client = bigquery.Client(project='peya-venezuela')
 
     sql_query = """
@@ -100,8 +90,11 @@ def cargar_datos_bigquery():
     df['ds_date'] = pd.to_datetime(df['ds_date'])
     return df
 
+with st.spinner("Conectando con BigQuery (peya-venezuela)..."):
+    df_real = cargar_datos_bigquery()
+
 # -------------------------------------------------------------------------
-# 3. CONTROLES EN LA BARRA LATERAL (SIDEBAR)
+# 3. CONTROLES SIDEBAR
 # -------------------------------------------------------------------------
 st.sidebar.image("https://upload.wikimedia.org/wikipedia/commons/d/d6/PedidosYa_Logo.png", width=180)
 st.sidebar.title("⚙️ Parámetros de Simulación")
@@ -149,7 +142,6 @@ df_60d = df_hist[df_hist['ds_date'] >= (max_fecha - pd.Timedelta(days=60))].copy
 inicio_mes_actual = max_fecha.replace(day=1)
 df_mtd = df_60d[df_60d['ds_date'] >= inicio_mes_actual]
 
-# Días a proyectar
 if sel_horizonte == 'Resto del Mes (MTD)':
     ultimo_dia_mes = pd.date_range(start=inicio_mes_actual, periods=1, freq='ME')[0]
     dias_a_proyectar = (ultimo_dia_mes - max_fecha).days
@@ -160,7 +152,6 @@ elif sel_horizonte == 'Próximos 15 días':
 else:
     dias_a_proyectar = 30
 
-# Cálculos
 base_orders_dia = float(df_mtd['orders_forecast_rooster'].mean()) if len(df_mtd) > 0 else float(df_60d['orders_forecast_rooster'].mean())
 base_cph = float(df_mtd['cph_diario'].mean()) if len(df_mtd) > 0 else float(df_60d['cph_diario'].mean())
 
@@ -179,9 +170,8 @@ accuracy_60d = 100.0 - ((np.abs(df_60d['orders_real'] - df_60d['orders_forecast_
 # 5. DASHBOARD PRINCIPAL
 # -------------------------------------------------------------------------
 st.title(f"🚀 Dashboard de Proyección Operativa | {plaza_label}")
-st.caption(f"Datos extraídos desde BigQuery (`peya-venezuela`). Horizonte: **{dias_a_proyectar} días**. Precisión del modelo (Últ. 60D): **{accuracy_60d:.1f}%**.")
+st.caption(f"Datos desde BigQuery (`peya-venezuela`). Horizonte: **{dias_a_proyectar} días**. Precisión del modelo (Últ. 60D): **{accuracy_60d:.1f}%**.")
 
-# Tarjetas KPI Principales
 kpi1, kpi2, kpi3, kpi4 = st.columns(4)
 
 kpi1.metric("📦 Órdenes Proyectadas", f"{orders_totales_proyectadas:,}", f"{int(orders_dia_proyectadas):,}/día")
@@ -196,9 +186,6 @@ kpi4.metric(
 
 st.markdown("---")
 
-# -------------------------------------------------------------------------
-# 6. GRÁFICO INTERACTIVO (PLOTLY)
-# -------------------------------------------------------------------------
 st.subheader("📈 Evolución Diaria: Histórico (Últimos 2 Meses) vs. Proyección Futura")
 
 fechas_futuras = [max_fecha + pd.Timedelta(days=i+1) for i in range(dias_a_proyectar)]
@@ -207,7 +194,6 @@ y_proj = [df_60d[df_60d['ds_date'] == max_fecha]['orders_real'].values[0]] + [or
 
 fig = go.Figure()
 
-# Órdenes Reales
 fig.add_trace(go.Scatter(
     x=df_60d['ds_date'], y=df_60d['orders_real'],
     mode='lines+markers', name='Órdenes Reales (Histórico + MTD)',
@@ -215,30 +201,18 @@ fig.add_trace(go.Scatter(
     marker=dict(size=4)
 ))
 
-# Forecast Rooster
 fig.add_trace(go.Scatter(
     x=df_60d['ds_date'], y=df_60d['orders_forecast_rooster'],
     mode='lines', name='Forecast Rooster (Base)',
     line=dict(color='#F59E0B', width=2, dash='dash')
 ))
 
-# Proyección Futura
 fig.add_trace(go.Scatter(
     x=x_proj, y=y_proj,
     mode='lines+markers', name=f'Proyección Futura ({dias_a_proyectar} días)',
     line=dict(color='#E31837', width=3, dash='dot'),
     marker=dict(size=6, symbol='diamond')
 ))
-
-# Línea de Corte MTD
-fig.add_vline(
-    x=max_fecha.timestamp() * 1000, 
-    line_width=1.5, 
-    line_dash="dash", 
-    line_color="#6B7280",
-    annotation_text="Corte MTD (Hoy)", 
-    annotation_position="top left"
-)
 
 fig.update_layout(
     height=480,
@@ -250,8 +224,7 @@ fig.update_layout(
 
 st.plotly_chart(fig, use_container_width=True)
 
-# Tabla de Resumen Expandible
-with st.expander("📋 Ver detalle de datos y tabla operativa"):
+with st.expander("📋 Ver detalle de datos en tabla"):
     df_display = df_60d[['ds_date', 'orders_real', 'orders_forecast_rooster', 'worked_hours', 'cph_diario']].copy()
     df_display.columns = ['Fecha', 'Órdenes Reales', 'Forecast Rooster', 'Horas Trabajadas', 'CPH ($)']
     st.dataframe(df_display.sort_values('Fecha', ascending=False), use_container_width=True)
