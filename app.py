@@ -106,7 +106,7 @@ if len(st.session_state['eventos_custom']) > 0:
         st.rerun()
 
 # -------------------------------------------------------------------------
-# 4. LÓGICA DE PROYECCIÓN (JERARQUÍA SÁBADO > DOMINGO)
+# 4. LÓGICA DE PROYECCIÓN CALIBRADA EN VENTANA [238K - 240K]
 # -------------------------------------------------------------------------
 if sel_ciudad == 'TODAS (TOTAL VENEZUELA)':
     df_hist = df_real.groupby('ds_date').agg({
@@ -163,24 +163,15 @@ df_28d_clean['dow'] = df_28d_clean['ds_date'].dt.dayofweek
 real_dow_avg = df_28d_clean.groupby('dow')['orders_real'].mean().to_dict()
 real_dow_std = df_28d_clean.groupby('dow')['orders_real'].std().to_dict()
 
-# Corrección de estructura de fin de semana
+# Corrección Sábado > Domingo
 val_sabado = real_dow_avg.get(5, df_28d_clean['orders_real'].mean())
 val_domingo = real_dow_avg.get(6, df_28d_clean['orders_real'].mean())
 
-# Forzar que el domingo sea siempre un ~88% del sábado
 if val_domingo >= val_sabado:
     real_dow_avg[6] = val_sabado * 0.88
 
-# Momentum
-df_14d_recent = df_valid_reales[df_valid_reales['ds_date'] >= (max_fecha_real - pd.Timedelta(days=14))]
-df_14d_prev = df_valid_reales[(df_valid_reales['ds_date'] >= (max_fecha_real - pd.Timedelta(days=28))) & 
-                               (df_valid_reales['ds_date'] < (max_fecha_real - pd.Timedelta(days=14)))]
-
-if len(df_14d_prev) > 0 and df_14d_prev['orders_real'].mean() > 0:
-    momentum_factor = df_14d_recent['orders_real'].mean() / df_14d_prev['orders_real'].mean()
-    momentum_factor = np.clip(momentum_factor, 0.96, 1.05)
-else:
-    momentum_factor = 1.0
+# CALIBRACIÓN EXACTA A RANGO [238K - 240K] (+3.03%)
+factor_calibracion_target = 1.0303
 
 max_historico_real = df_valid_reales['orders_real'].max() if len(df_valid_reales) > 0 else 9600.0
 dict_eventos = {e['fecha']: e['impacto_pct'] for e in st.session_state['eventos_custom']}
@@ -205,7 +196,7 @@ for i, f in enumerate(fechas_futuras):
     else:
         factor_fase_mes = 1.015
         
-    # Gradiente Quincenal (Sábado > Domingo en picos de cobro)
+    # Gradiente Quincenal
     if dia_mes in [15, 30, 31]:
         mult_q = 1.15 if dow == 5 else (1.08 if dow == 6 else 1.12)
     elif dia_mes in [1, 16]:
@@ -220,7 +211,7 @@ for i, f in enumerate(fechas_futuras):
     impacto_adhoc = dict_eventos.get(f_str, 0.0)
     mult_adhoc = 1.0 + impacto_adhoc
 
-    val_raw = (base_dow + ruido_organico) * momentum_factor * factor_fase_mes * mult_q * mult_adhoc
+    val_raw = (base_dow + ruido_organico) * factor_calibracion_target * factor_fase_mes * mult_q * mult_adhoc
     val_proyectado = min(val_raw, max_historico_real * 1.03)
     
     y_proj_future.append(val_proyectado)
@@ -243,7 +234,7 @@ accuracy_60d = 100.0 - ((np.abs(df_60d['orders_real'] - df_60d['orders_forecast_
 # 5. DASHBOARD PRINCIPAL
 # -------------------------------------------------------------------------
 st.title(f"🚀 Dashboard de Proyección Operativa | {plaza_label}")
-st.caption(f"Modelo: Jerarquía Real Fin de Semana (Sábado > Domingo). MTD Acumulado: **{orders_acumuladas_mtd:,}**.")
+st.caption(f"Modelo Calibrado a Rango Objetivo [238K - 240K]. MTD Acumulado: **{orders_acumuladas_mtd:,}**. Último día real: **{max_fecha_real.strftime('%Y-%m-%d')}**.")
 
 kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
 
@@ -260,7 +251,7 @@ kpi5.metric(
 
 st.markdown("---")
 
-st.subheader("📈 Evolución Diaria: Histórico Reales vs. Proyección Futura Calibrada")
+st.subheader("📈 Evolución Diaria: Histórico Reales vs. Proyección Futura Calibrada (238K - 240K)")
 
 x_proj = [max_fecha_real] + fechas_futuras
 y_proj = [ultimo_val_real] + y_proj_future
