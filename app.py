@@ -27,6 +27,21 @@ st.markdown("""
         background-color: #FFFFFF;
         border-right: 1px solid #E2E8F0;
     }
+    .grid-card {
+        background-color: #1E293B;
+        color: #FFFFFF;
+        padding: 8px;
+        border-radius: 6px;
+        font-size: 12px;
+        text-align: center;
+    }
+    .grid-adjusted {
+        color: #10B981;
+        font-weight: bold;
+    }
+    .grid-diff {
+        font-size: 11px;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -51,15 +66,35 @@ def cargar_datos_csv():
 df_real = cargar_datos_csv()
 
 # -------------------------------------------------------------------------
-# 3. CONTROLES SIDEBAR
+# 3. CONTROLES SIDEBAR (FILTROS DE ROOSTER: HORA, CIUDAD, ZONA)
 # -------------------------------------------------------------------------
 st.sidebar.image("https://upload.wikimedia.org/wikipedia/commons/d/d6/PedidosYa_Logo.png", width=180)
-st.sidebar.title("⚙️ Parámetros de Simulación")
+st.sidebar.title("⚙️ Filtros de Rooster")
 
+# 1. Filtro Ciudad
 ciudades_lista = sorted([str(c) for c in df_real['city_name'].dropna().unique() if str(c) not in ['None', 'nan']])
-opciones_vista = ['TODAS (TOTAL VENEZUELA)'] + ciudades_lista
+sel_ciudad = st.sidebar.selectbox("🏙️ Ciudad:", ['TODAS'] + ciudades_lista)
 
-sel_ciudad = st.sidebar.selectbox("🏙️ Vista / Ciudad:", opciones_vista)
+# Aplicar filtro de ciudad temporal para poblar zonas
+df_temp_ciudad = df_real if sel_ciudad == 'TODAS' else df_real[df_real['city_name'] == sel_ciudad]
+
+# 2. Filtro Zona (Si la columna existe en el CSV)
+col_zona = 'zone_name' if 'zone_name' in df_real.columns else ('subzone_name' if 'subzone_name' in df_real.columns else None)
+if col_zona:
+    zonas_lista = sorted([str(z) for z in df_temp_ciudad[col_zona].dropna().unique() if str(z) not in ['None', 'nan']])
+    sel_zona = st.sidebar.selectbox("📍 Zona / Subzona:", ['TODAS'] + zonas_lista)
+else:
+    sel_zona = 'TODAS'
+
+# 3. Filtro Hora / Turno (Si la columna existe en el CSV)
+col_hora = 'hour' if 'hour' in df_real.columns else ('time_block' if 'time_block' in df_real.columns else None)
+if col_hora:
+    horas_lista = sorted([int(h) for h in df_temp_ciudad[col_hora].dropna().unique() if pd.notna(h)])
+    sel_hora = st.sidebar.selectbox("⏰ Hora:", ['TODAS'] + horas_lista)
+else:
+    sel_hora = 'TODAS'
+
+st.sidebar.markdown("---")
 sel_horizonte = st.sidebar.selectbox("📅 Horizonte de Proyección:", ['Resto del Mes (MTD)', 'Próximos 15 días', 'Próximos 30 días'])
 
 st.sidebar.markdown("---")
@@ -67,70 +102,30 @@ st.sidebar.subheader("🎯 Metas Operativas")
 target_utr = st.sidebar.slider("Target UTR (Órdenes/Hora):", min_value=1.20, max_value=2.50, value=1.65, step=0.05)
 target_cpo = st.sidebar.slider("Target CPO ($):", min_value=0.80, max_value=2.50, value=1.33, step=0.01)
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("🌧️ Modificadores Ad-Hoc / Clustered Events")
-
-with st.sidebar.expander("➕ Agregar Impacto Específico por Día", expanded=False):
-    df_valid_temp = df_real[df_real['orders_real'] > 500]
-    max_date_temp = df_valid_temp['ds_date'].max() if len(df_valid_temp) > 0 else df_real['ds_date'].max()
-    dias_opciones = [(max_date_temp + pd.Timedelta(days=i+1)).strftime('%Y-%m-%d') for i in range(30)]
-    
-    fecha_evt = st.selectbox("Fecha del Evento:", dias_opciones)
-    tipo_evt = st.selectbox("Cluster / Motivo:", [
-        "Lluvia Fuerte 🌧️",
-        "Lluvia Moderada 🌦️",
-        "Feriado / Festivo 🎆",
-        "Promoción Agresiva 🚀",
-        "Falla Eléctrica / Conectividad ⚡",
-        "Cierre Preventivo / Contingencia 🛑"
-    ])
-    direccion_evt = st.radio("Dirección del Impacto:", ["Positivo (+)", "Negativo (-)"])
-    pct_evt = st.slider("Porcentaje de Impacto (%):", min_value=1, max_value=50, value=15, step=1)
-
-    if st.button("📌 Añadir Evento"):
-        mult_signo = (pct_evt / 100.0) if direccion_evt == "Positivo (+)" else -(pct_evt / 100.0)
-        st.session_state['eventos_custom'].append({
-            "fecha": fecha_evt,
-            "tipo": tipo_evt,
-            "impacto_pct": mult_signo
-        })
-        st.success(f"Evento añadido para {fecha_evt}")
-
-if len(st.session_state['eventos_custom']) > 0:
-    st.sidebar.markdown("**Eventos Activos:**")
-    for idx, e in enumerate(st.session_state['eventos_custom']):
-        signo_txt = f"+{e['impacto_pct']*100:.0f}%" if e['impacto_pct'] > 0 else f"{e['impacto_pct']*100:.0f}%"
-        st.sidebar.caption(f"• **{e['fecha']}**: {e['tipo']} ({signo_txt})")
-    if st.sidebar.button("🗑️ Limpiar Todos los Eventos"):
-        st.session_state['eventos_custom'] = []
-        st.rerun()
-
 # -------------------------------------------------------------------------
-# 4. LÓGICA DE PROYECCIÓN CALIBRADA EN VENTANA [238K - 240K]
+# 4. FILTRADO DE DATOS Y LÓGICA DE PROYECCIÓN
 # -------------------------------------------------------------------------
-if sel_ciudad == 'TODAS (TOTAL VENEZUELA)':
-    df_hist = df_real.groupby('ds_date').agg({
-        'orders_forecast_rooster': 'sum',
-        'orders_real': 'sum',
-        'worked_hours': 'sum',
-        'rider_payments': 'first'
-    }).reset_index()
-    df_hist['cph_diario'] = np.where(df_hist['worked_hours'] > 0, df_hist['rider_payments'] / df_hist['worked_hours'], 0.0)
-    plaza_label = "Venezuela (Total Consolidado)"
-    p_limite_inf = 2000
-else:
-    df_hist = df_real[df_real['city_name'] == sel_ciudad].groupby('ds_date').agg({
-        'orders_forecast_rooster': 'sum',
-        'orders_real': 'sum',
-        'worked_hours': 'sum',
-        'cph_diario': 'mean'
-    }).reset_index()
-    plaza_label = sel_ciudad
-    p_limite_inf = 100
+df_filtered = df_real.copy()
 
+if sel_ciudad != 'TODAS':
+    df_filtered = df_filtered[df_filtered['city_name'] == sel_ciudad]
+if col_zona and sel_zona != 'TODAS':
+    df_filtered = df_filtered[df_filtered[col_zona] == sel_zona]
+if col_hora and sel_hora != 'TODAS':
+    df_filtered = df_filtered[df_filtered[col_hora] == sel_hora]
+
+# Agrupación diaria con base en los filtros seleccionados
+df_hist = df_filtered.groupby('ds_date').agg({
+    'orders_forecast_rooster': 'sum',
+    'orders_real': 'sum',
+    'worked_hours': 'sum',
+    'rider_payments': 'first' if 'rider_payments' in df_filtered.columns else 'sum'
+}).reset_index()
+
+df_hist['cph_diario'] = np.where(df_hist['worked_hours'] > 0, df_hist.get('rider_payments', 0) / df_hist['worked_hours'], 0.0)
 df_hist = df_hist.sort_values('ds_date').copy()
 
-# FILTRO DE OUTLIERS
+p_limite_inf = 50 if sel_ciudad != 'TODAS' else 2000
 df_valid_reales = df_hist[df_hist['orders_real'] >= p_limite_inf].copy()
 
 if len(df_valid_reales) > 0:
@@ -145,7 +140,6 @@ inicio_mes_actual = max_fecha_real.replace(day=1)
 df_mtd = df_60d[(df_60d['ds_date'] >= inicio_mes_actual) & (df_60d['orders_real'] >= p_limite_inf)]
 orders_acumuladas_mtd = int(df_mtd['orders_real'].sum())
 
-# Horizonte
 if sel_horizonte == 'Resto del Mes (MTD)':
     ultimo_dia_mes = pd.date_range(start=inicio_mes_actual, periods=1, freq='ME')[0]
     dias_a_proyectar = (ultimo_dia_mes - max_fecha_real).days
@@ -156,7 +150,7 @@ elif sel_horizonte == 'Próximos 15 días':
 else:
     dias_a_proyectar = 30
 
-# DOW BASELINE CON REGLA SÁBADO > DOMINGO
+# DOW BASELINE
 df_28d_clean = df_valid_reales[df_valid_reales['ds_date'] >= (max_fecha_real - pd.Timedelta(days=28))].copy()
 df_28d_clean['dow'] = df_28d_clean['ds_date'].dt.dayofweek
 
@@ -164,19 +158,13 @@ real_dow_avg = df_28d_clean.groupby('dow')['orders_real'].mean().to_dict()
 real_dow_std = df_28d_clean.groupby('dow')['orders_real'].std().to_dict()
 
 # Corrección Sábado > Domingo
-val_sabado = real_dow_avg.get(5, df_28d_clean['orders_real'].mean())
-val_domingo = real_dow_avg.get(6, df_28d_clean['orders_real'].mean())
+val_sabado = real_dow_avg.get(5, df_28d_clean['orders_real'].mean() if len(df_28d_clean)>0 else 100)
+val_domingo = real_dow_avg.get(6, df_28d_clean['orders_real'].mean() if len(df_28d_clean)>0 else 100)
 
 if val_domingo >= val_sabado:
     real_dow_avg[6] = val_sabado * 0.88
 
-# CALIBRACIÓN EXACTA A RANGO [238K - 240K] (+3.03%)
 factor_calibracion_target = 1.0303
-
-max_historico_real = df_valid_reales['orders_real'].max() if len(df_valid_reales) > 0 else 9600.0
-dict_eventos = {e['fecha']: e['impacto_pct'] for e in st.session_state['eventos_custom']}
-
-# PROYECCIÓN FUTURA
 fechas_futuras = [max_fecha_real + pd.Timedelta(days=i+1) for i in range(dias_a_proyectar)]
 y_proj_future = []
 
@@ -184,19 +172,14 @@ np.random.seed(101)
 
 for i, f in enumerate(fechas_futuras):
     dow = f.dayofweek
-    base_dow = real_dow_avg.get(dow, df_28d_clean['orders_real'].mean())
-    std_dow = real_dow_std.get(dow, 250.0)
-    if pd.isna(std_dow): std_dow = 250.0
+    base_dow = real_dow_avg.get(dow, df_28d_clean['orders_real'].mean() if len(df_28d_clean)>0 else 100)
+    std_dow = real_dow_std.get(dow, 25.0)
+    if pd.isna(std_dow): std_dow = 25.0
     
     ruido_organico = np.random.normal(0, std_dow * 0.25)
-    
     dia_mes = f.day
-    if 1 <= dia_mes <= 7 or 16 <= dia_mes <= 22:
-        factor_fase_mes = 0.985
-    else:
-        factor_fase_mes = 1.015
+    factor_fase_mes = 0.985 if (1 <= dia_mes <= 7 or 16 <= dia_mes <= 22) else 1.015
         
-    # Gradiente Quincenal
     if dia_mes in [15, 30, 31]:
         mult_q = 1.15 if dow == 5 else (1.08 if dow == 6 else 1.12)
     elif dia_mes in [1, 16]:
@@ -206,59 +189,103 @@ for i, f in enumerate(fechas_futuras):
     else:
         mult_q = 1.0
 
-    # Modificador Ad-Hoc
-    f_str = f.strftime('%Y-%m-%d')
-    impacto_adhoc = dict_eventos.get(f_str, 0.0)
-    mult_adhoc = 1.0 + impacto_adhoc
+    val_raw = (base_dow + ruido_organico) * factor_calibracion_target * factor_fase_mes * mult_q
+    y_proj_future.append(val_raw)
 
-    val_raw = (base_dow + ruido_organico) * factor_calibracion_target * factor_fase_mes * mult_q * mult_adhoc
-    val_proyectado = min(val_raw, max_historico_real * 1.03)
-    
-    y_proj_future.append(val_proyectado)
-
-# Totales y Métricas Operativas
 orders_totales_proyectadas = int(sum(y_proj_future))
 orders_dia_promedio = orders_totales_proyectadas / dias_a_proyectar if dias_a_proyectar > 0 else 0
-
 estimacion_cierre_mes = orders_acumuladas_mtd + orders_totales_proyectadas if sel_horizonte == 'Resto del Mes (MTD)' else orders_totales_proyectadas
 
-base_cph = float(df_mtd['cph_diario'].mean()) if len(df_mtd) > 0 and df_mtd['cph_diario'].mean() > 0 else float(df_60d['cph_diario'].mean())
-horas_totales_requeridas = int(orders_totales_proyectadas / target_utr) if target_utr > 0 else 0
-costo_total_pago = horas_totales_requeridas * base_cph
-cpo_proyectado = costo_total_pago / orders_totales_proyectadas if orders_totales_proyectadas > 0 else 0.0
-
-delta_cpo = cpo_proyectado - target_cpo
-accuracy_60d = 100.0 - ((np.abs(df_60d['orders_real'] - df_60d['orders_forecast_rooster']).sum() / df_60d['orders_real'].sum()) * 100 if df_60d['orders_real'].sum() > 0 else 0)
-
 # -------------------------------------------------------------------------
-# 5. DASHBOARD PRINCIPAL
+# 5. DASHBOARD PRINCIPAL & KPIS
 # -------------------------------------------------------------------------
-st.title(f"🚀 Dashboard de Proyección Operativa | {plaza_label}")
-st.caption(f"Modelo Calibrado a Rango Objetivo [238K - 240K]. MTD Acumulado: **{orders_acumuladas_mtd:,}**. Último día real: **{max_fecha_real.strftime('%Y-%m-%d')}**.")
+st.title("🚀 Dashboard de Proyección Operativa | Vista Rooster")
+st.caption(f"Filtros Activos: Ciudad: **{sel_ciudad}** | Zona: **{sel_zona}** | Hora: **{sel_hora}**")
 
-kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
-
+kpi1, kpi2, kpi3 = st.columns(3)
 kpi1.metric("🏁 Est. Cierre Mensual", f"{estimacion_cierre_mes:,}", "MTD + Proyección")
-kpi2.metric("📦 Proyección Resto Mes", f"{orders_totales_proyectadas:,}", f"{int(orders_dia_promedio):,}/día prom")
-kpi3.metric("⏱️ Horas Requeridas", f"{horas_totales_requeridas:,}", f"Target UTR: {target_utr:.2f}")
-kpi4.metric("💵 Gasto Total Riders", f"${costo_total_pago:,.2f}", f"CPH Base: ${base_cph:.2f}/h")
-kpi5.metric(
-    "📉 CPO Proyectado", 
-    f"${cpo_proyectado:.2f}", 
-    f"{delta_cpo:+.2f} vs Target (${target_cpo:.2f})", 
-    delta_color="inverse"
-)
+kpi2.metric("📦 Resto del Mes", f"{orders_totales_proyectadas:,}", f"{int(orders_dia_promedio):,}/día prom")
+kpi3.metric("🎯 Target UTR", f"{target_utr:.2f}")
 
 st.markdown("---")
 
-st.subheader("📈 Evolución Diaria: Histórico Reales vs. Proyección Futura Calibrada (238K - 240K)")
+# -------------------------------------------------------------------------
+# 6. TABLA / GRID ESTILO ROOSTER (COMPARATIVO SEMANAL)
+# -------------------------------------------------------------------------
+st.subheader("📅 Matriz Semanal Comparativa (Rooster vs. Modelo)")
+
+# Construir DataFrame Consolidado de Histórico + Futuro para la Grid
+df_grid_hist = df_hist[['ds_date', 'orders_forecast_rooster', 'orders_real']].copy()
+df_grid_hist.columns = ['ds_date', 'rooster', 'sugerido']
+
+df_grid_fut = pd.DataFrame({
+    'ds_date': fechas_futuras,
+    'rooster': [df_grid_hist['rooster'].tail(14).mean()]*len(fechas_futuras), # Fallback / Base Rooster
+    'sugerido': y_proj_future
+})
+
+df_grid_all = pd.concat([df_grid_hist, df_grid_fut], ignore_index=True)
+df_grid_all['ds_date'] = pd.to_datetime(df_grid_all['ds_date'])
+
+# Generar identificadores de semana (Monday-based)
+df_grid_all['week_start'] = df_grid_all['ds_date'].apply(lambda d: d - pd.Timedelta(days=d.weekday()))
+df_grid_all['dow_name'] = df_grid_all['ds_date'].dt.strftime('%A')
+
+dias_semana = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+dias_espanol = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']
+
+# Obtener últimas 6 semanas para la vista
+semanas_unicas = sorted(df_grid_all['week_start'].unique(), reverse=True)[:6]
+
+# Estructurar Matriz
+matriz_data = []
+
+for sem in semanas_unicas:
+    row_dict = {'Weeks': sem.strftime('%Y-%m-%d')}
+    df_sem = df_grid_all[df_grid_all['week_start'] == sem]
+    
+    for dow, dow_es in zip(dias_semana, dias_espanol):
+        match = df_sem[df_sem['dow_name'] == dow]
+        if len(match) > 0:
+            val_rooster = match['rooster'].values[0]
+            val_sug = match['sugerido'].values[0]
+            var_pct = ((val_sug - val_rooster) / val_rooster * 100) if val_rooster > 0 else 0.0
+            
+            # Formato de celda comparativa estilo Rooster
+            signo = "+" if var_pct >= 0 else ""
+            color_var = "#10B981" if var_pct >= 0 else "#EF4444"
+            
+            cell_html = f"""
+            <b>Rooster:</b> {int(val_rooster):,}<br>
+            <b>Ajustado:</b> <span style="color:#2563EB; font-weight:bold;">{int(val_sug):,}</span><br>
+            <span style="color:{color_var}; font-size:11px;"><b>{signo}{var_pct:.1f}%</b></span>
+            """
+            row_dict[dow_es] = cell_html
+        else:
+            row_dict[dow_es] = "-"
+            
+    matriz_data.append(row_dict)
+
+df_matriz = pd.DataFrame(matriz_data)
+
+# Renderizar Matriz HTML limpia
+st.write(
+    df_matriz.to_html(escape=False, index=False),
+    unsafe_allow_html=True
+)
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+# -------------------------------------------------------------------------
+# 7. GRÁFICA DE EVOLUCIÓN
+# -------------------------------------------------------------------------
+st.subheader("📈 Evolución Diaria: Histórico Reales vs. Proyección Futura")
 
 x_proj = [max_fecha_real] + fechas_futuras
 y_proj = [ultimo_val_real] + y_proj_future
 
 fig = go.Figure()
 
-# Línea Histórica Reales
 fig.add_trace(go.Scatter(
     x=df_60d['ds_date'], y=df_60d['orders_real'],
     mode='lines+markers', name='Órdenes Reales (Histórico)',
@@ -266,14 +293,12 @@ fig.add_trace(go.Scatter(
     marker=dict(size=4)
 ))
 
-# Línea Forecast Base
 fig.add_trace(go.Scatter(
     x=df_60d['ds_date'], y=df_60d['orders_forecast_rooster'],
     mode='lines', name='Forecast Rooster Base',
     line=dict(color='#F59E0B', width=2, dash='dash')
 ))
 
-# Línea Roja Proyectada
 fig.add_trace(go.Scatter(
     x=x_proj, y=y_proj,
     mode='lines+markers', name=f'Proyección Modelo ({dias_a_proyectar} días)',
@@ -282,7 +307,7 @@ fig.add_trace(go.Scatter(
 ))
 
 fig.update_layout(
-    height=480,
+    height=420,
     template='plotly_white',
     hovermode='x unified',
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
@@ -290,8 +315,3 @@ fig.update_layout(
 )
 
 st.plotly_chart(fig, use_container_width=True)
-
-with st.expander("📋 Ver detalle de datos históricos y proyecciones en tabla"):
-    df_display = df_60d[['ds_date', 'orders_real', 'orders_forecast_rooster', 'worked_hours', 'cph_diario']].copy()
-    df_display.columns = ['Fecha', 'Órdenes Reales', 'Forecast Rooster', 'Horas Trabajadas', 'CPH ($)']
-    st.dataframe(df_display.sort_values('Fecha', ascending=False), use_container_width=True)
