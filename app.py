@@ -106,7 +106,7 @@ if len(st.session_state['eventos_custom']) > 0:
         st.rerun()
 
 # -------------------------------------------------------------------------
-# 4. LÓGICA DE PROYECCIÓN (VIERNES > SÁBADO > DOMINGO)
+# 4. LÓGICA DE PROYECCIÓN (CONTROL DEL 29 DE AGOSTO Y JERARQUÍA DE FINDE)
 # -------------------------------------------------------------------------
 if sel_ciudad == 'TODAS (TOTAL VENEZUELA)':
     df_hist = df_real.groupby('ds_date').agg({
@@ -168,56 +168,48 @@ real_dow_std = df_28d_clean.groupby('dow')['orders_real'].std().to_dict()
 
 dict_eventos = {e['fecha']: e['impacto_pct'] for e in st.session_state['eventos_custom']}
 
-# PROYECCIÓN CON JERARQUÍA: VIERNES > SÁBADO > DOMINGO
+# PROYECCIÓN CON JERARQUÍA RIGUROSA: VIERNES > SÁBADO > DOMINGO
 y_proj_future = []
 np.random.seed(101)
 
-ult_viernes_val = real_dow_avg.get(4, 9000)
-ult_sabado_val = ult_viernes_val * 0.93
+ult_viernes_val = real_dow_avg.get(4, 8800)
 
 for f in fechas_futuras:
     dow = f.dayofweek # 0: Lunes ... 4: Viernes, 5: Sábado, 6: Domingo
     std_dow = real_dow_std.get(dow, 200.0)
     if pd.isna(std_dow): std_dow = 200.0
     
-    ruido_organico = np.random.normal(0, std_dow * 0.12)
+    ruido_organico = np.random.normal(0, std_dow * 0.10)
     dia_mes = f.day
     
     is_quincena = dia_mes in [14, 15, 16, 28, 29, 30, 31, 1, 2]
     
     if is_quincena:
-        if dow == 4:      # Viernes de Quincena (Pico Máximo Absoluto ~9,100 - 9,400)
-            mult_q = 1.26
-        elif dow == 5:    # Sábado de Quincena
-            mult_q = 1.18
-        elif dow == 6:    # Domingo de Quincena
-            mult_q = 1.05
-        else:             # Día Hábil de Quincena
-            mult_q = 1.08
+        if dow == 4:      # Viernes de Quincena (Pico Máximo Absoluto)
+            mult_q = 1.22
+        else:             # Otros días de quincena
+            mult_q = 1.06
     else:
-        if dow in [0, 1, 2]: # Lunes, Martes, Miércoles fuera de quincena (~6,000 - 6,400)
+        if dow in [0, 1, 2]: # Lunes a Miércoles fuera de quincena
             mult_q = 0.92
-        elif dow in [3, 4]:  # Jueves, Viernes fuera de quincena
+        else:
             mult_q = 0.96
-        else:                # Finde fuera de quincena
-            mult_q = 0.95
 
     f_str = f.strftime('%Y-%m-%d')
     impacto_adhoc = dict_eventos.get(f_str, 0.0)
     mult_adhoc = 1.0 + impacto_adhoc
 
-    if dow == 4:   # Viernes (Pico)
-        val_raw = (real_dow_avg.get(4, 9000) + ruido_organico) * mult_q * mult_adhoc
+    if dow == 4:   # VIERNES (Crea la cresta de la semana)
+        val_raw = (real_dow_avg.get(4, 8800) + ruido_organico) * mult_q * mult_adhoc
         ult_viernes_val = val_raw
-        ult_sabado_val = ult_viernes_val * 0.93
-    elif dow == 5: # Sábado (93% del Viernes)
-        val_raw = ult_sabado_val
-    elif dow == 6: # Domingo (86% del Sábado)
-        val_raw = ult_sabado_val * 0.86
-    else:          # Días hábiles
-        val_raw = (real_dow_avg.get(dow, 7000) + ruido_organico) * mult_q * mult_adhoc
+    elif dow == 5: # SÁBADO (Estrictamente 92% del Viernes)
+        val_raw = ult_viernes_val * 0.92
+    elif dow == 6: # DOMINGO (Estrictamente 85% del Sábado = ~78% del Viernes)
+        val_raw = ult_viernes_val * 0.92 * 0.85
+    else:          # DÍAS HÁBILES
+        val_raw = (real_dow_avg.get(dow, 6800) + ruido_organico) * mult_q * mult_adhoc
 
-    val_proyectado = min(val_raw, 9600.0)
+    val_proyectado = min(val_raw, 9300.0)
     y_proj_future.append(val_proyectado)
 
 # Totales y Métricas Operativas
@@ -240,7 +232,7 @@ delta_cpo = cpo_proyectado - target_cpo
 # 5. DASHBOARD PRINCIPAL
 # -------------------------------------------------------------------------
 st.title(f"🚀 Dashboard de Proyección Operativa | {plaza_label}")
-st.caption(f"Modelo Calibrado: Viernes > Sábado > Domingo (~232K). MTD Acumulado: **{orders_acumuladas_mtd:,}**.")
+st.caption(f"Modelo Calibrado: Ajuste del 29 de Agosto (Viernes > Sábado > Domingo). MTD Acumulado: **{orders_acumuladas_mtd:,}**.")
 
 kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
 
