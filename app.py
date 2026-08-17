@@ -1,3 +1,13 @@
+# Reemplaza la parte inicial de cargar_datos_bigquery por esto:
+if "gcp_service_account" in st.secrets:
+    creds_dict = dict(st.secrets["gcp_service_account"])
+    if "private_key" in creds_dict:
+        # Limpia caracteres escapados por error al pegar
+        pk = creds_dict["private_key"]
+        pk = pk.replace("\\n", "\n").replace("\\_", "_")
+        creds_dict["private_key"] = pk
+        
+    client = bigquery.Client.from_service_account_info(creds_dict)
 import streamlit as st
 import pandas as pd
 import numpy as np
