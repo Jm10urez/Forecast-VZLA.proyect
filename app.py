@@ -4,7 +4,7 @@ import numpy as np
 import plotly.graph_objects as go
 
 # -------------------------------------------------------------------------
-# 1. CONFIGURACIÓN DE PÁGINA
+# 1. CONFIGURACIÓN DE PÁGINA Y ESTILOS CSS PROFESIONALES
 # -------------------------------------------------------------------------
 st.set_page_config(
     page_title="Simulador Operativo | PedidosYa VE",
@@ -27,25 +27,82 @@ st.markdown("""
         background-color: #FFFFFF;
         border-right: 1px solid #E2E8F0;
     }
-    .grid-card {
-        background-color: #1E293B;
-        color: #FFFFFF;
-        padding: 8px;
+    
+    /* ESTILOS PARA MATRIZ ROOSTER PROFESIONAL */
+    .rooster-table {
+        width: 100%;
+        border-collapse: separate;
+        border-spacing: 6px;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    .rooster-table th {
+        background-color: #0F172A;
+        color: #94A3B8;
+        padding: 10px;
+        font-size: 13px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
         border-radius: 6px;
-        font-size: 12px;
         text-align: center;
     }
-    .grid-adjusted {
-        color: #10B981;
-        font-weight: bold;
+    .rooster-table td {
+        background-color: #1E293B;
+        color: #F8FAFC;
+        padding: 10px;
+        border-radius: 8px;
+        vertical-align: top;
+        min-width: 120px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     }
-    .grid-diff {
+    .week-cell {
+        background-color: #0F172A !important;
+        color: #38BDF8 !important;
+        font-weight: bold;
+        vertical-align: middle !important;
+        text-align: center;
+        font-size: 13px;
+    }
+    .cell-box {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+    .val-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 12px;
+    }
+    .lbl-txt { color: #94A3B8; font-size: 11px; }
+    .val-base { color: #E2E8F0; font-weight: 500; }
+    .val-model { color: #38BDF8; font-weight: 700; font-size: 13px; }
+    
+    .badge-pos {
+        background-color: rgba(16, 185, 129, 0.15);
+        color: #34D399;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-weight: 700;
         font-size: 11px;
+    }
+    .badge-neg {
+        background-color: rgba(239, 68, 68, 0.15);
+        color: #F87171;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-weight: 700;
+        font-size: 11px;
+    }
+    .empty-cell {
+        color: #475569;
+        text-align: center;
+        padding: 15px !important;
+        font-size: 14px;
     }
     </style>
 """, unsafe_allow_html=True)
 
-# Inicializar Session State para eventos ad-hoc
 if 'eventos_custom' not in st.session_state:
     st.session_state['eventos_custom'] = []
 
@@ -75,10 +132,9 @@ st.sidebar.title("⚙️ Filtros de Rooster")
 ciudades_lista = sorted([str(c) for c in df_real['city_name'].dropna().unique() if str(c) not in ['None', 'nan']])
 sel_ciudad = st.sidebar.selectbox("🏙️ Ciudad:", ['TODAS'] + ciudades_lista)
 
-# Aplicar filtro de ciudad temporal para poblar zonas
 df_temp_ciudad = df_real if sel_ciudad == 'TODAS' else df_real[df_real['city_name'] == sel_ciudad]
 
-# 2. Filtro Zona (Si la columna existe en el CSV)
+# 2. Filtro Zona
 col_zona = 'zone_name' if 'zone_name' in df_real.columns else ('subzone_name' if 'subzone_name' in df_real.columns else None)
 if col_zona:
     zonas_lista = sorted([str(z) for z in df_temp_ciudad[col_zona].dropna().unique() if str(z) not in ['None', 'nan']])
@@ -86,7 +142,7 @@ if col_zona:
 else:
     sel_zona = 'TODAS'
 
-# 3. Filtro Hora / Turno (Si la columna existe en el CSV)
+# 3. Filtro Hora
 col_hora = 'hour' if 'hour' in df_real.columns else ('time_block' if 'time_block' in df_real.columns else None)
 if col_hora:
     horas_lista = sorted([int(h) for h in df_temp_ciudad[col_hora].dropna().unique() if pd.notna(h)])
@@ -114,7 +170,7 @@ if col_zona and sel_zona != 'TODAS':
 if col_hora and sel_hora != 'TODAS':
     df_filtered = df_filtered[df_filtered[col_hora] == sel_hora]
 
-# Agrupación diaria con base en los filtros seleccionados
+# Agrupación diaria
 df_hist = df_filtered.groupby('ds_date').agg({
     'orders_forecast_rooster': 'sum',
     'orders_real': 'sum',
@@ -197,9 +253,9 @@ orders_dia_promedio = orders_totales_proyectadas / dias_a_proyectar if dias_a_pr
 estimacion_cierre_mes = orders_acumuladas_mtd + orders_totales_proyectadas if sel_horizonte == 'Resto del Mes (MTD)' else orders_totales_proyectadas
 
 # -------------------------------------------------------------------------
-# 5. DASHBOARD PRINCIPAL & KPIS
+# 5. DASHBOARD PRINCIPAL
 # -------------------------------------------------------------------------
-st.title("🚀 Dashboard de Proyección Operativa | Vista Rooster")
+st.title("🚀 Dashboard de Proyección Operativa | Matriz Rooster")
 st.caption(f"Filtros Activos: Ciudad: **{sel_ciudad}** | Zona: **{sel_zona}** | Hora: **{sel_hora}**")
 
 kpi1, kpi2, kpi3 = st.columns(3)
@@ -210,74 +266,82 @@ kpi3.metric("🎯 Target UTR", f"{target_utr:.2f}")
 st.markdown("---")
 
 # -------------------------------------------------------------------------
-# 6. TABLA / GRID ESTILO ROOSTER (COMPARATIVO SEMANAL)
+# 6. CONSTRUCCIÓN DE MATRIZ HTML LIMPIA Y ELEGANTE
 # -------------------------------------------------------------------------
-st.subheader("📅 Matriz Semanal Comparativa (Rooster vs. Modelo)")
+st.subheader("📅 Matriz Semanal Comparativa (Rooster Base vs. Modelo Ajustado)")
 
-# Construir DataFrame Consolidado de Histórico + Futuro para la Grid
 df_grid_hist = df_hist[['ds_date', 'orders_forecast_rooster', 'orders_real']].copy()
 df_grid_hist.columns = ['ds_date', 'rooster', 'sugerido']
 
+# Base Rooster futura de referencia (Promedio histórico reciente si no hay forecast futuro disponible)
+val_rooster_ref = df_grid_hist['rooster'].tail(14).mean() if len(df_grid_hist) > 0 else 6801.0
+
 df_grid_fut = pd.DataFrame({
     'ds_date': fechas_futuras,
-    'rooster': [df_grid_hist['rooster'].tail(14).mean()]*len(fechas_futuras), # Fallback / Base Rooster
+    'rooster': [val_rooster_ref]*len(fechas_futuras),
     'sugerido': y_proj_future
 })
 
 df_grid_all = pd.concat([df_grid_hist, df_grid_fut], ignore_index=True)
 df_grid_all['ds_date'] = pd.to_datetime(df_grid_all['ds_date'])
 
-# Generar identificadores de semana (Monday-based)
 df_grid_all['week_start'] = df_grid_all['ds_date'].apply(lambda d: d - pd.Timedelta(days=d.weekday()))
 df_grid_all['dow_name'] = df_grid_all['ds_date'].dt.strftime('%A')
 
 dias_semana = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 dias_espanol = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']
 
-# Obtener últimas 6 semanas para la vista
-semanas_unicas = sorted(df_grid_all['week_start'].unique(), reverse=True)[:6]
+semanas_unicas = sorted(df_grid_all['week_start'].unique(), reverse=True)[:5]
 
-# Estructurar Matriz
-matriz_data = []
+# Renderizar Tabla HTML nativa con CSS
+html_table = '<table class="rooster-table">'
+html_table += '<thead><tr><th>Semanas</th>' + ''.join([f'<th>{d}</th>' for d in dias_espanol]) + '</tr></thead><tbody>'
 
 for sem in semanas_unicas:
-    row_dict = {'Weeks': sem.strftime('%Y-%m-%d')}
+    html_table += f'<tr><td class="week-cell">{sem.strftime("%Y-%m-%d")}</td>'
     df_sem = df_grid_all[df_grid_all['week_start'] == sem]
     
-    for dow, dow_es in zip(dias_semana, dias_espanol):
+    for dow in dias_semana:
         match = df_sem[df_sem['dow_name'] == dow]
         if len(match) > 0:
             val_rooster = match['rooster'].values[0]
             val_sug = match['sugerido'].values[0]
             var_pct = ((val_sug - val_rooster) / val_rooster * 100) if val_rooster > 0 else 0.0
             
-            # Formato de celda comparativa estilo Rooster
             signo = "+" if var_pct >= 0 else ""
-            color_var = "#10B981" if var_pct >= 0 else "#EF4444"
+            badge_class = "badge-pos" if var_pct >= 0 else "badge-neg"
             
-            cell_html = f"""
-            <b>Rooster:</b> {int(val_rooster):,}<br>
-            <b>Ajustado:</b> <span style="color:#2563EB; font-weight:bold;">{int(val_sug):,}</span><br>
-            <span style="color:{color_var}; font-size:11px;"><b>{signo}{var_pct:.1f}%</b></span>
-            """
-            row_dict[dow_es] = cell_html
+            cell_content = f'''
+            <td>
+                <div class="cell-box">
+                    <div class="val-row">
+                        <span class="lbl-txt">Rooster:</span>
+                        <span class="val-base">{int(val_rooster):,}</span>
+                    </div>
+                    <div class="val-row">
+                        <span class="lbl-txt">Ajustado:</span>
+                        <span class="val-model">{int(val_sug):,}</span>
+                    </div>
+                    <div style="text-align: right; margin-top: 4px;">
+                        <span class="{badge_class}">{signo}{var_pct:.1f}%</span>
+                    </div>
+                </div>
+            </td>
+            '''
+            html_table += cell_content
         else:
-            row_dict[dow_es] = "-"
+            html_table += '<td class="empty-cell">-</td>'
             
-    matriz_data.append(row_dict)
+    html_table += '</tr>'
 
-df_matriz = pd.DataFrame(matriz_data)
+html_table += '</tbody></table>'
 
-# Renderizar Matriz HTML limpia
-st.write(
-    df_matriz.to_html(escape=False, index=False),
-    unsafe_allow_html=True
-)
+st.markdown(html_table, unsafe_allow_html=True)
 
 st.markdown("<br>", unsafe_allow_html=True)
 
 # -------------------------------------------------------------------------
-# 7. GRÁFICA DE EVOLUCIÓN
+# 7. GRÁFICA DE EVOLUCIÓN DIARIA
 # -------------------------------------------------------------------------
 st.subheader("📈 Evolución Diaria: Histórico Reales vs. Proyección Futura")
 
