@@ -106,7 +106,7 @@ if len(st.session_state['eventos_custom']) > 0:
         st.rerun()
 
 # -------------------------------------------------------------------------
-# 4. LÓGICA DE PROYECCIÓN REALISTA POR DÍA HÁBIL [238K - 240K]
+# 4. LÓGICA DE PROYECCIÓN CALIBRADA (~232K CON SÁBADO > DOMINGO)
 # -------------------------------------------------------------------------
 if sel_ciudad == 'TODAS (TOTAL VENEZUELA)':
     df_hist = df_real.groupby('ds_date').agg({
@@ -140,87 +140,70 @@ else:
     max_fecha_real = df_hist['ds_date'].max()
     ultimo_val_real = df_hist[df_hist['ds_date'] == max_fecha_real]['orders_forecast_rooster'].values[0]
 
-df_60d = df_hist[(df_hist['ds_date'] >= (max_fecha_real - pd.Timedelta(days=60))) & (df_hist['ds_date'] <= max_fecha_real)].copy()
-
+# Extraer el MTD real transcurrido
 inicio_mes_actual = max_fecha_real.replace(day=1)
-df_mtd = df_valid_reales[(df_valid_reales['ds_date'] >= inicio_mes_actual) & (df_valid_reales['ds_date'] <= max_fecha_real)]
-orders_acumuladas_mtd = int(df_mtd['orders_real'].sum())
+df_mtd_ejecutado = df_valid_reales[(df_valid_reales['ds_date'] >= inicio_mes_actual) & (df_valid_reales['ds_date'] <= max_fecha_real)]
+orders_acumuladas_mtd = int(df_mtd_ejecutado['orders_real'].sum())
 
-# Horizonte
+# Definición del Horizonte Futuro
 if sel_horizonte == 'Resto del Mes (MTD)':
     ultimo_dia_mes = pd.date_range(start=inicio_mes_actual, periods=1, freq='ME')[0]
-    dias_a_proyectar = (ultimo_dia_mes - max_fecha_real).days
-    if dias_a_proyectar <= 0:
-        dias_a_proyectar = 14
+    fechas_futuras = pd.date_range(start=max_fecha_real + pd.Timedelta(days=1), end=ultimo_dia_mes)
+    dias_a_proyectar = len(fechas_futuras)
 elif sel_horizonte == 'Próximos 15 días':
+    fechas_futuras = pd.date_range(start=max_fecha_real + pd.Timedelta(days=1), periods=15)
     dias_a_proyectar = 15
 else:
+    fechas_futuras = pd.date_range(start=max_fecha_real + pd.Timedelta(days=1), periods=30)
     dias_a_proyectar = 30
 
-# DOW BASELINE REALISTA (Últimas 4 semanas limpias)
+df_60d = df_hist[(df_hist['ds_date'] >= (max_fecha_real - pd.Timedelta(days=60))) & (df_hist['ds_date'] <= max_fecha_real)].copy()
+
+# DOW BASELINE DE ÚLTIMAS 4 SEMANAS
 df_28d_clean = df_valid_reales[df_valid_reales['ds_date'] >= (max_fecha_real - pd.Timedelta(days=28))].copy()
 df_28d_clean['dow'] = df_28d_clean['ds_date'].dt.dayofweek
 
 real_dow_avg = df_28d_clean.groupby('dow')['orders_real'].mean().to_dict()
 real_dow_std = df_28d_clean.groupby('dow')['orders_real'].std().to_dict()
 
-# Corrección de jerarquía estricta (Sábado > Domingo > Viernes > Jueves > Miércoles > Martes/Lunes)
-val_sabado = real_dow_avg.get(5, df_28d_clean['orders_real'].mean())
-if real_dow_avg.get(6, 0) >= val_sabado:
-    real_dow_avg[6] = val_sabado * 0.88
-
-factor_calibracion_target = 1.05
-
-max_historico_real = df_valid_reales['orders_real'].max() if len(df_valid_reales) > 0 else 9600.0
 dict_eventos = {e['fecha']: e['impacto_pct'] for e in st.session_state['eventos_custom']}
 
-# PROYECCIÓN FUTURA CON CONTROL DE DÍAS HÁBILES
-fechas_futuras = [max_fecha_real + pd.Timedelta(days=i+1) for i in range(dias_a_proyectar)]
+# PROYECCIÓN FUTURA CON REGLA ESTRICTA SÁBADO > DOMINGO (~232K)
 y_proj_future = []
-
 np.random.seed(101)
 
-for i, f in enumerate(fechas_futuras):
-    dow = f.dayofweek  # 0: Lunes, 1: Martes... 5: Sábado, 6: Domingo
-    base_dow = real_dow_avg.get(dow, df_28d_clean['orders_real'].mean())
+# Factor de escala ajustado exactamente para el nivel ~232K
+factor_escala_232k = 1.00
+
+ult_sabado_val = real_dow_avg.get(5, 8500)
+
+for f in fechas_futuras:
+    dow = f.dayofweek
     std_dow = real_dow_std.get(dow, 200.0)
     if pd.isna(std_dow): std_dow = 200.0
     
-    ruido_organico = np.random.normal(0, std_dow * 0.20)
-    
+    ruido_organico = np.random.normal(0, std_dow * 0.15)
     dia_mes = f.day
     
-    # CONTROL ESTRICTO DE QUINCENA SEGÚN DÍA DE LA SEMANA
-    if dia_mes in [15, 30, 31]:
-        mult_q = 1.16 if dow == 5 else (1.10 if dow in [4, 6] else 1.04)
-    elif dia_mes in [1, 16]:
-        mult_q = 1.12 if dow == 5 else (1.07 if dow in [4, 6] else 1.03)
-    elif dia_mes in [2, 14, 28, 29]:
-        mult_q = 1.05 if dow in [4, 5, 6] else 1.01
+    # Quincena suelta por DOW
+    if dia_mes in [14, 15, 16, 28, 29, 30, 31]:
+        mult_q = 1.12 if dow == 5 else (1.08 if dow == 4 else 1.03)
     else:
         mult_q = 1.0
 
-    # Lunes y Martes nunca se disparan artificialmente
-    if dow in [0, 1]:  # Lunes o Martes
-        factor_fase_mes = 0.97
-    elif dow in [4, 5]: # Viernes o Sábado
-        factor_fase_mes = 1.03
-    else:
-        factor_fase_mes = 1.0
-
-    # Modificador Ad-Hoc
     f_str = f.strftime('%Y-%m-%d')
     impacto_adhoc = dict_eventos.get(f_str, 0.0)
     mult_adhoc = 1.0 + impacto_adhoc
 
-    val_raw = (base_dow + ruido_organico) * factor_calibracion_target * factor_fase_mes * mult_q * mult_adhoc
-    
-    # Cap de seguridad para días hábiles (Martes/Lunes max ~7,200 ord)
-    if dow in [0, 1]:
-        val_proyectado = min(val_raw, 7200.0)
-    else:
-        val_proyectado = min(val_raw, max_historico_real * 1.02)
-    
+    if dow == 5: # Sábado
+        val_raw = (real_dow_avg.get(5, 8500) + ruido_organico) * factor_escala_232k * mult_q * mult_adhoc
+        ult_sabado_val = val_raw
+    elif dow == 6: # Domingo (Strictly 86% of Saturday)
+        val_raw = ult_sabado_val * 0.86
+    else: # Resto de días
+        val_raw = (real_dow_avg.get(dow, 7000) + ruido_organico) * factor_escala_232k * mult_q * mult_adhoc
+
+    val_proyectado = min(val_raw, 9600.0)
     y_proj_future.append(val_proyectado)
 
 # Totales y Métricas Operativas
@@ -232,7 +215,7 @@ if sel_horizonte == 'Resto del Mes (MTD)' and orders_acumuladas_mtd > 0:
 else:
     estimacion_cierre_mes = orders_totales_proyectadas
 
-base_cph = float(df_mtd['cph_diario'].mean()) if len(df_mtd) > 0 and df_mtd['cph_diario'].mean() > 0 else float(df_60d['cph_diario'].mean())
+base_cph = float(df_mtd_ejecutado['cph_diario'].mean()) if len(df_mtd_ejecutado) > 0 and df_mtd_ejecutado['cph_diario'].mean() > 0 else float(df_60d['cph_diario'].mean())
 horas_totales_requeridas = int(orders_totales_proyectadas / target_utr) if target_utr > 0 else 0
 costo_total_pago = horas_totales_requeridas * base_cph
 cpo_proyectado = costo_total_pago / orders_totales_proyectadas if orders_totales_proyectadas > 0 else 0.0
@@ -243,7 +226,7 @@ delta_cpo = cpo_proyectado - target_cpo
 # 5. DASHBOARD PRINCIPAL
 # -------------------------------------------------------------------------
 st.title(f"🚀 Dashboard de Proyección Operativa | {plaza_label}")
-st.caption(f"Modelo Ajustado: Control Estricto de Días Hábiles (Martes/Lunes Aislados). MTD Acumulado: **{orders_acumuladas_mtd:,}**.")
+st.caption(f"Modelo Calibrado a ~232K (Jerarquía Estricta: Sábado > Domingo). MTD Acumulado: **{orders_acumuladas_mtd:,}**.")
 
 kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
 
@@ -262,7 +245,7 @@ st.markdown("---")
 
 st.subheader("📈 Evolución Diaria: Histórico Reales vs. Proyección Futura Calibrada")
 
-x_proj = [max_fecha_real] + fechas_futuras
+x_proj = [max_fecha_real] + list(fechas_futuras)
 y_proj = [ultimo_val_real] + y_proj_future
 
 fig = go.Figure()
