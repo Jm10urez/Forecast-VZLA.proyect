@@ -30,6 +30,10 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# Initialize Session State for custom events
+if 'eventos_custom' not in st.session_state:
+    st.session_state['eventos_custom'] = []
+
 # -------------------------------------------------------------------------
 # 2. CARGA DE DATOS DESDE ARCHIVO LOCAL CSV
 # -------------------------------------------------------------------------
@@ -59,18 +63,59 @@ sel_ciudad = st.sidebar.selectbox("🏙️ Vista / Ciudad:", opciones_vista)
 sel_horizonte = st.sidebar.selectbox("📅 Horizonte de Proyección:", ['Resto del Mes (MTD)', 'Próximos 15 días', 'Próximos 30 días'])
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("📈 Modificadores de Demanda")
-aplica_quincena = st.sidebar.checkbox("💰 ¿Aplica Efecto Quincena?", value=True)
-pct_impacto = st.sidebar.slider("Uplift Quincena Base (%):", min_value=0.0, max_value=0.50, value=0.22, step=0.01,
-                                 help="Aumento aplicado en días de quincena (14-16 y 29-2). Los viernes de quincena reciben un boost adicional automático.")
+st.sidebar.subheader("📈 Factor Quincena Implícito")
+pct_quincena_base = st.sidebar.slider(
+    "Uplift Quincena Base (%):", 
+    min_value=0.0, max_value=0.50, value=0.22, step=0.01,
+    help="El modelo aplica implícitamente este uplift en días 14-16 y 29-2, agregando picos extras los viernes y fines de semana."
+)
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("🎯 Metas Operativas y Financieras")
+st.sidebar.subheader("🎯 Metas Operativas")
 target_utr = st.sidebar.slider("Target UTR (Órdenes/Hora):", min_value=1.20, max_value=2.50, value=1.65, step=0.05)
 target_cpo = st.sidebar.slider("Target CPO ($):", min_value=0.80, max_value=2.50, value=1.33, step=0.01)
 
+st.sidebar.markdown("---")
+st.sidebar.subheader("🌧️ Modificadores Ad-Hoc / Clustered Events")
+
+with st.sidebar.expander("➕ Agregar Impacto Específico por Día", expanded=False):
+    # Determine future date options
+    df_valid_temp = df_real[df_real['orders_real'] > 0]
+    max_date_temp = df_valid_temp['ds_date'].max() if len(df_valid_temp) > 0 else df_real['ds_date'].max()
+    dias_opciones = [(max_date_temp + pd.Timedelta(days=i+1)).strftime('%Y-%m-%d') for i in range(30)]
+    
+    fecha_evt = st.selectbox("Fecha del Evento:", dias_opciones)
+    tipo_evt = st.selectbox("Cluster / Motivo:", [
+        "Lluvia Fuerte 🌧️",
+        "Lluvia Moderada 🌦️",
+        "Feriado / Festivo 🎆",
+        "Promoción Agresiva 🚀",
+        "Falla Eléctrica / Conectividad ⚡",
+        "Cierre Preventivo / Contingencia 🛑"
+    ])
+    direccion_evt = st.radio("Dirección del Impacto:", ["Positivo (+)", "Negativo (-)"])
+    pct_evt = st.slider("Porcentaje de Impacto (%):", min_value=1, max_value=50, value=15, step=1)
+
+    if st.button("📌 Añadir Evento"):
+        mult_signo = (pct_evt / 100.0) if direccion_evt == "Positivo (+)" else -(pct_evt / 100.0)
+        st.session_state['eventos_custom'].append({
+            "fecha": fecha_evt,
+            "tipo": tipo_evt,
+            "impacto_pct": mult_signo
+        })
+        st.success(f"Evento añadido para {fecha_evt}")
+
+if len(st.session_state['eventos_custom']) > 0:
+    st.sidebar.markdown("**Eventos Activos:**")
+    for idx, e in enumerate(st.session_state['eventos_custom']):
+        signo_txt = f"+{e['impacto_pct']*100:.0f}%" if e['impacto_pct'] > 0 else f"{e['impacto_pct']*100:.0f}%"
+        st.sidebar.caption(f"• **{e['fecha']}**: {e['tipo']} ({signo_txt})")
+    if st.sidebar.button("🗑️ Limpiar Todos los Eventos"):
+        st.session_state['eventos_custom'] = []
+        st.rerun()
+
 # -------------------------------------------------------------------------
-# 4. LÓGICA DE PROYECCIÓN SIN EMPALME EN CERO
+# 4. LÓGICA DE PROYECCIÓN
 # -------------------------------------------------------------------------
 if sel_ciudad == 'TODAS (TOTAL VENEZUELA)':
     df_hist = df_real.groupby('ds_date').agg({
@@ -92,7 +137,7 @@ else:
 
 df_hist = df_hist.sort_values('ds_date').copy()
 
-# Filtrar estrictamente días operados con órdenes reales > 0
+# Filtrar días con data real válida
 df_valid_reales = df_hist[df_hist['orders_real'] > 0]
 
 if len(df_valid_reales) > 0:
@@ -126,6 +171,9 @@ if len(df_valid_28d) > 0 and df_valid_28d['orders_forecast_rooster'].sum() > 0:
 else:
     ratio_ejecucion = 1.0
 
+# Mapa de eventos ad-hoc
+dict_eventos = {e['fecha']: e['impacto_pct'] for e in st.session_state['eventos_custom']}
+
 # PROYECCIÓN FUTURA
 fechas_futuras = [max_fecha_real + pd.Timedelta(days=i+1) for i in range(dias_a_proyectar)]
 y_proj_future = []
@@ -140,17 +188,23 @@ for f in fechas_futuras:
     if base_f == 0.0:
         base_f = rooster_dow_avg.get(f.dayofweek, df_valid_28d['orders_forecast_rooster'].mean())
     
-    if aplica_quincena and (f.day in dias_quincena):
+    # 1. QUINCENA IMPLÍCITA
+    if f.day in dias_quincena:
         if f.dayofweek == 4:  # Viernes
-            mult_q = 1.0 + float(pct_impacto) + 0.15
+            mult_q = 1.0 + float(pct_quincena_base) + 0.15
         elif f.dayofweek in [5, 6]:  # Finde
-            mult_q = 1.0 + float(pct_impacto) + 0.10
+            mult_q = 1.0 + float(pct_quincena_base) + 0.10
         else:
-            mult_q = 1.0 + float(pct_impacto)
+            mult_q = 1.0 + float(pct_quincena_base)
     else:
         mult_q = 1.0
 
-    val_proyectado = base_f * ratio_ejecucion * mult_q
+    # 2. MODIFICADOR AD-HOC (LLUVIA, FERIADO, PROMO, ETC.)
+    f_str = f.strftime('%Y-%m-%d')
+    impacto_adhoc = dict_eventos.get(f_str, 0.0)
+    mult_adhoc = 1.0 + impacto_adhoc
+
+    val_proyectado = base_f * ratio_ejecucion * mult_q * mult_adhoc
     y_proj_future.append(val_proyectado)
 
 # Totales y Métricas Operativas
@@ -169,7 +223,7 @@ accuracy_60d = 100.0 - ((np.abs(df_60d['orders_real'] - df_60d['orders_forecast_
 # 5. DASHBOARD PRINCIPAL
 # -------------------------------------------------------------------------
 st.title(f"🚀 Dashboard de Proyección Operativa | {plaza_label}")
-st.caption(f"Modelo: Proyección Continua sin anomalías en cero. Último día real: **{max_fecha_real.strftime('%Y-%m-%d')}**.")
+st.caption(f"Modelo: Quincena Implícita + Modificadores Ad-Hoc. Último día real: **{max_fecha_real.strftime('%Y-%m-%d')}**.")
 
 kpi1, kpi2, kpi3, kpi4 = st.columns(4)
 
@@ -185,15 +239,14 @@ kpi4.metric(
 
 st.markdown("---")
 
-st.subheader("📈 Evolución Diaria: Histórico Reales vs. Proyección Futura Continua")
+st.subheader("📈 Evolución Diaria: Histórico Reales vs. Proyección Futura (Efectos Implícitos + Ad-Hoc)")
 
-# CONEXIÓN LIMPIA: Se usa el último valor real positivo para empalmar sin caídas falsas
 x_proj = [max_fecha_real] + fechas_futuras
 y_proj = [ultimo_val_real] + y_proj_future
 
 fig = go.Figure()
 
-# Línea Histórica Reales (Filtrados > 0)
+# Línea Histórica Reales
 fig.add_trace(go.Scatter(
     x=df_60d['ds_date'], y=df_60d['orders_real'],
     mode='lines+markers', name='Órdenes Reales (Histórico Válido)',
@@ -208,7 +261,7 @@ fig.add_trace(go.Scatter(
     line=dict(color='#F59E0B', width=2, dash='dash')
 ))
 
-# Línea Roja Continua
+# Línea Roja Proyectada
 fig.add_trace(go.Scatter(
     x=x_proj, y=y_proj,
     mode='lines+markers', name=f'Proyección Modelo ({dias_a_proyectar} días)',
