@@ -106,7 +106,7 @@ if len(st.session_state['eventos_custom']) > 0:
         st.rerun()
 
 # -------------------------------------------------------------------------
-# 4. LÓGICA DE PROYECCIÓN Y CÁLCULO MTD [238K - 240K]
+# 4. LÓGICA DE PROYECCIÓN REALISTA POR DÍA HÁBIL [238K - 240K]
 # -------------------------------------------------------------------------
 if sel_ciudad == 'TODAS (TOTAL VENEZUELA)':
     df_hist = df_real.groupby('ds_date').agg({
@@ -142,7 +142,6 @@ else:
 
 df_60d = df_hist[(df_hist['ds_date'] >= (max_fecha_real - pd.Timedelta(days=60))) & (df_hist['ds_date'] <= max_fecha_real)].copy()
 
-# Fix de extracción MTD
 inicio_mes_actual = max_fecha_real.replace(day=1)
 df_mtd = df_valid_reales[(df_valid_reales['ds_date'] >= inicio_mes_actual) & (df_valid_reales['ds_date'] <= max_fecha_real)]
 orders_acumuladas_mtd = int(df_mtd['orders_real'].sum())
@@ -158,55 +157,56 @@ elif sel_horizonte == 'Próximos 15 días':
 else:
     dias_a_proyectar = 30
 
-# DOW BASELINE CON REGLA SÁBADO > DOMINGO
+# DOW BASELINE REALISTA (Últimas 4 semanas limpias)
 df_28d_clean = df_valid_reales[df_valid_reales['ds_date'] >= (max_fecha_real - pd.Timedelta(days=28))].copy()
 df_28d_clean['dow'] = df_28d_clean['ds_date'].dt.dayofweek
 
 real_dow_avg = df_28d_clean.groupby('dow')['orders_real'].mean().to_dict()
 real_dow_std = df_28d_clean.groupby('dow')['orders_real'].std().to_dict()
 
-# Corrección Sábado > Domingo
+# Corrección de jerarquía estricta (Sábado > Domingo > Viernes > Jueves > Miércoles > Martes/Lunes)
 val_sabado = real_dow_avg.get(5, df_28d_clean['orders_real'].mean())
-val_domingo = real_dow_avg.get(6, df_28d_clean['orders_real'].mean())
-
-if val_domingo >= val_sabado:
+if real_dow_avg.get(6, 0) >= val_sabado:
     real_dow_avg[6] = val_sabado * 0.88
 
-# FACTOR AJUSTADO A VENTANA OBJETIVO [238K - 240K] (+8.5%)
-factor_calibracion_target = 1.085
+factor_calibracion_target = 1.05
 
 max_historico_real = df_valid_reales['orders_real'].max() if len(df_valid_reales) > 0 else 9600.0
 dict_eventos = {e['fecha']: e['impacto_pct'] for e in st.session_state['eventos_custom']}
 
-# PROYECCIÓN FUTURA
+# PROYECCIÓN FUTURA CON CONTROL DE DÍAS HÁBILES
 fechas_futuras = [max_fecha_real + pd.Timedelta(days=i+1) for i in range(dias_a_proyectar)]
 y_proj_future = []
 
 np.random.seed(101)
 
 for i, f in enumerate(fechas_futuras):
-    dow = f.dayofweek
+    dow = f.dayofweek  # 0: Lunes, 1: Martes... 5: Sábado, 6: Domingo
     base_dow = real_dow_avg.get(dow, df_28d_clean['orders_real'].mean())
-    std_dow = real_dow_std.get(dow, 250.0)
-    if pd.isna(std_dow): std_dow = 250.0
+    std_dow = real_dow_std.get(dow, 200.0)
+    if pd.isna(std_dow): std_dow = 200.0
     
-    ruido_organico = np.random.normal(0, std_dow * 0.25)
+    ruido_organico = np.random.normal(0, std_dow * 0.20)
     
     dia_mes = f.day
-    if 1 <= dia_mes <= 7 or 16 <= dia_mes <= 22:
-        factor_fase_mes = 0.985
-    else:
-        factor_fase_mes = 1.015
-        
-    # Gradiente Quincenal
+    
+    # CONTROL ESTRICTO DE QUINCENA SEGÚN DÍA DE LA SEMANA
     if dia_mes in [15, 30, 31]:
-        mult_q = 1.15 if dow == 5 else (1.08 if dow == 6 else 1.12)
+        mult_q = 1.16 if dow == 5 else (1.10 if dow in [4, 6] else 1.04)
     elif dia_mes in [1, 16]:
-        mult_q = 1.12 if dow == 5 else (1.06 if dow == 6 else 1.10)
+        mult_q = 1.12 if dow == 5 else (1.07 if dow in [4, 6] else 1.03)
     elif dia_mes in [2, 14, 28, 29]:
-        mult_q = 1.06
+        mult_q = 1.05 if dow in [4, 5, 6] else 1.01
     else:
         mult_q = 1.0
+
+    # Lunes y Martes nunca se disparan artificialmente
+    if dow in [0, 1]:  # Lunes o Martes
+        factor_fase_mes = 0.97
+    elif dow in [4, 5]: # Viernes o Sábado
+        factor_fase_mes = 1.03
+    else:
+        factor_fase_mes = 1.0
 
     # Modificador Ad-Hoc
     f_str = f.strftime('%Y-%m-%d')
@@ -214,7 +214,12 @@ for i, f in enumerate(fechas_futuras):
     mult_adhoc = 1.0 + impacto_adhoc
 
     val_raw = (base_dow + ruido_organico) * factor_calibracion_target * factor_fase_mes * mult_q * mult_adhoc
-    val_proyectado = min(val_raw, max_historico_real * 1.03)
+    
+    # Cap de seguridad para días hábiles (Martes/Lunes max ~7,200 ord)
+    if dow in [0, 1]:
+        val_proyectado = min(val_raw, 7200.0)
+    else:
+        val_proyectado = min(val_raw, max_historico_real * 1.02)
     
     y_proj_future.append(val_proyectado)
 
@@ -222,7 +227,6 @@ for i, f in enumerate(fechas_futuras):
 orders_totales_proyectadas = int(sum(y_proj_future))
 orders_dia_promedio = orders_totales_proyectadas / dias_a_proyectar if dias_a_proyectar > 0 else 0
 
-# Estimación cierre total
 if sel_horizonte == 'Resto del Mes (MTD)' and orders_acumuladas_mtd > 0:
     estimacion_cierre_mes = orders_acumuladas_mtd + orders_totales_proyectadas
 else:
@@ -234,13 +238,12 @@ costo_total_pago = horas_totales_requeridas * base_cph
 cpo_proyectado = costo_total_pago / orders_totales_proyectadas if orders_totales_proyectadas > 0 else 0.0
 
 delta_cpo = cpo_proyectado - target_cpo
-accuracy_60d = 100.0 - ((np.abs(df_60d['orders_real'] - df_60d['orders_forecast_rooster']).sum() / df_60d['orders_real'].sum()) * 100 if df_60d['orders_real'].sum() > 0 else 0)
 
 # -------------------------------------------------------------------------
 # 5. DASHBOARD PRINCIPAL
 # -------------------------------------------------------------------------
 st.title(f"🚀 Dashboard de Proyección Operativa | {plaza_label}")
-st.caption(f"Modelo Calibrado a Rango Objetivo [238K - 240K]. MTD Acumulado: **{orders_acumuladas_mtd:,}**. Último día real: **{max_fecha_real.strftime('%Y-%m-%d')}**.")
+st.caption(f"Modelo Ajustado: Control Estricto de Días Hábiles (Martes/Lunes Aislados). MTD Acumulado: **{orders_acumuladas_mtd:,}**.")
 
 kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
 
@@ -257,7 +260,7 @@ kpi5.metric(
 
 st.markdown("---")
 
-st.subheader("📈 Evolución Diaria: Histórico Reales vs. Proyección Futura Calibrada (238K - 240K)")
+st.subheader("📈 Evolución Diaria: Histórico Reales vs. Proyección Futura Calibrada")
 
 x_proj = [max_fecha_real] + fechas_futuras
 y_proj = [ultimo_val_real] + y_proj_future
