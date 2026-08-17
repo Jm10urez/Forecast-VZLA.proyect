@@ -38,60 +38,13 @@ st.markdown("""
 def cargar_datos_bigquery():
     if "gcp_service_account" in st.secrets:
         creds_dict = dict(st.secrets["gcp_service_account"])
+        # Reemplaza saltos de línea escapados si existen en el diccionario
+        if "private_key" in creds_dict:
+            creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+            
         client = bigquery.Client.from_service_account_info(creds_dict)
     else:
         client = bigquery.Client(project='peya-venezuela')
-
-    sql_query = """
-    WITH 
-    daily_staffing AS (
-        SELECT 
-            DATE(SAFE_CAST(staffing.created_date_local AS TIMESTAMP)) AS ds_date,
-            staffing.city_name AS city_name,
-            SUM(staffing.adjusted_orders) AS orders_forecast_rooster,
-            SUM(staffing.orders_actuals) AS orders_real,
-            SUM(staffing.evaluations_working_time) / 3600.0 AS worked_hours
-        FROM `peya-data-origins-pro.cl_hurrier.staffing_kpi` AS staffing
-        WHERE SAFE_CAST(staffing.created_date_local AS TIMESTAMP) >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 180 DAY)
-          AND staffing.country_code = 've'
-        GROUP BY 1, 2
-    ),
-    daily_payments AS (
-        SELECT 
-            DATE(SAFE_CAST(payments.created_date AS TIMESTAMP)) AS ds_date,
-            SUM(payments.total_date_payment) AS rider_payments
-        FROM `peya-data-origins-pro.cl_hurrier.rider_payments` AS payments
-        WHERE SAFE_CAST(payments.created_date AS TIMESTAMP) >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 180 DAY)
-          AND payments.country_code = 've'
-        GROUP BY 1
-    )
-    SELECT 
-        s.ds_date,
-        s.city_name,
-        s.orders_forecast_rooster,
-        s.orders_real,
-        ROUND(s.worked_hours, 2) AS worked_hours,
-        p.rider_payments,
-        ROUND(SAFE_DIVIDE(s.orders_real, s.worked_hours), 2) AS utr_diario,
-        ROUND(SAFE_DIVIDE(p.rider_payments, s.orders_real), 2) AS cpo_diario,
-        ROUND(SAFE_DIVIDE(p.rider_payments, s.worked_hours), 2) AS cph_diario
-    FROM daily_staffing s
-    LEFT JOIN daily_payments p ON s.ds_date = p.ds_date
-    ORDER BY s.ds_date ASC, s.city_name ASC;
-    """
-    
-    df = client.query(sql_query).to_dataframe()
-    
-    columnas_num = ['orders_forecast_rooster', 'orders_real', 'worked_hours', 'rider_payments', 'utr_diario', 'cpo_diario', 'cph_diario']
-    for col in columnas_num:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
-            
-    df['ds_date'] = pd.to_datetime(df['ds_date'])
-    return df
-
-with st.spinner("Conectando con BigQuery (peya-venezuela)..."):
-    df_real = cargar_datos_bigquery()
 
 # -------------------------------------------------------------------------
 # 3. CONTROLES SIDEBAR
