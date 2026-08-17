@@ -70,7 +70,7 @@ target_utr = st.sidebar.slider("Target UTR (Órdenes/Hora):", min_value=1.20, ma
 target_cpo = st.sidebar.slider("Target CPO ($):", min_value=0.80, max_value=2.50, value=1.33, step=0.01)
 
 # -------------------------------------------------------------------------
-# 4. LÓGICA DE PROYECCIÓN CON BOOST DE VIERNES DE QUINCENA
+# 4. LÓGICA DE PROYECCIÓN SIN EMPALME EN CERO
 # -------------------------------------------------------------------------
 if sel_ciudad == 'TODAS (TOTAL VENEZUELA)':
     df_hist = df_real.groupby('ds_date').agg({
@@ -92,16 +92,18 @@ else:
 
 df_hist = df_hist.sort_values('ds_date').copy()
 
-# Filtrar días operados verdaderamente (> 0)
+# Filtrar estrictamente días operados con órdenes reales > 0
 df_valid_reales = df_hist[df_hist['orders_real'] > 0]
 
 if len(df_valid_reales) > 0:
     max_fecha_real = df_valid_reales['ds_date'].max()
+    ultimo_val_real = df_valid_reales[df_valid_reales['ds_date'] == max_fecha_real]['orders_real'].values[0]
 else:
     max_fecha_real = df_hist['ds_date'].max()
+    ultimo_val_real = df_hist[df_hist['ds_date'] == max_fecha_real]['orders_forecast_rooster'].values[0]
 
-# Recortamos la historia hasta la fecha válida
-df_60d = df_hist[(df_hist['ds_date'] >= (max_fecha_real - pd.Timedelta(days=60))) & (df_hist['ds_date'] <= max_fecha_real)].copy()
+# Filtramos la historia visible cortando en la fecha máxima válida
+df_60d = df_hist[(df_hist['ds_date'] >= (max_fecha_real - pd.Timedelta(days=60))) & (df_hist['ds_date'] <= max_fecha_real) & (df_hist['orders_real'] > 0)].copy()
 inicio_mes_actual = max_fecha_real.replace(day=1)
 df_mtd = df_60d[df_60d['ds_date'] >= inicio_mes_actual]
 
@@ -124,7 +126,7 @@ if len(df_valid_28d) > 0 and df_valid_28d['orders_forecast_rooster'].sum() > 0:
 else:
     ratio_ejecucion = 1.0
 
-# PROYECCIÓN CON PICO ESPECIAL EN VIERNES DE QUINCENA
+# PROYECCIÓN FUTURA
 fechas_futuras = [max_fecha_real + pd.Timedelta(days=i+1) for i in range(dias_a_proyectar)]
 y_proj_future = []
 dias_quincena = {1, 2, 14, 15, 16, 29, 30, 31}
@@ -138,12 +140,11 @@ for f in fechas_futuras:
     if base_f == 0.0:
         base_f = rooster_dow_avg.get(f.dayofweek, df_valid_28d['orders_forecast_rooster'].mean())
     
-    # Lógica de multiplicador de quincena + diferenciación Viernes/Finde
     if aplica_quincena and (f.day in dias_quincena):
         if f.dayofweek == 4:  # Viernes
-            mult_q = 1.0 + float(pct_impacto) + 0.15  # Boost de +15% para viernes de quincena
-        elif f.dayofweek in [5, 6]:  # Sábado o Domingo
-            mult_q = 1.0 + float(pct_impacto) + 0.10  # Boost de +10% para fines de semana de quincena
+            mult_q = 1.0 + float(pct_impacto) + 0.15
+        elif f.dayofweek in [5, 6]:  # Finde
+            mult_q = 1.0 + float(pct_impacto) + 0.10
         else:
             mult_q = 1.0 + float(pct_impacto)
     else:
@@ -168,7 +169,7 @@ accuracy_60d = 100.0 - ((np.abs(df_60d['orders_real'] - df_60d['orders_forecast_
 # 5. DASHBOARD PRINCIPAL
 # -------------------------------------------------------------------------
 st.title(f"🚀 Dashboard de Proyección Operativa | {plaza_label}")
-st.caption(f"Modelo: Proyección con Boost de Viernes/Finde de Quincena. Último día real: **{max_fecha_real.strftime('%Y-%m-%d')}**.")
+st.caption(f"Modelo: Proyección Continua sin anomalías en cero. Último día real: **{max_fecha_real.strftime('%Y-%m-%d')}**.")
 
 kpi1, kpi2, kpi3, kpi4 = st.columns(4)
 
@@ -184,14 +185,15 @@ kpi4.metric(
 
 st.markdown("---")
 
-st.subheader("📈 Evolución Diaria: Histórico Reales vs. Proyección Futura Ajustada")
+st.subheader("📈 Evolución Diaria: Histórico Reales vs. Proyección Futura Continua")
 
+# CONEXIÓN LIMPIA: Se usa el último valor real positivo para empalmar sin caídas falsas
 x_proj = [max_fecha_real] + fechas_futuras
-y_proj = [df_60d[df_60d['ds_date'] == max_fecha_real]['orders_real'].values[0]] + y_proj_future
+y_proj = [ultimo_val_real] + y_proj_future
 
 fig = go.Figure()
 
-# Línea Histórica Reales
+# Línea Histórica Reales (Filtrados > 0)
 fig.add_trace(go.Scatter(
     x=df_60d['ds_date'], y=df_60d['orders_real'],
     mode='lines+markers', name='Órdenes Reales (Histórico Válido)',
@@ -206,7 +208,7 @@ fig.add_trace(go.Scatter(
     line=dict(color='#F59E0B', width=2, dash='dash')
 ))
 
-# Línea Roja Ajustada con Picos de Viernes
+# Línea Roja Continua
 fig.add_trace(go.Scatter(
     x=x_proj, y=y_proj,
     mode='lines+markers', name=f'Proyección Modelo ({dias_a_proyectar} días)',
