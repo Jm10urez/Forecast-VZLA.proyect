@@ -106,7 +106,7 @@ if len(st.session_state['eventos_custom']) > 0:
         st.rerun()
 
 # -------------------------------------------------------------------------
-# 4. LÓGICA DE PROYECCIÓN MULTIVARIABLE Y ORGÁNICA
+# 4. LÓGICA DE PROYECCIÓN (JERARQUÍA SÁBADO > DOMINGO)
 # -------------------------------------------------------------------------
 if sel_ciudad == 'TODAS (TOTAL VENEZUELA)':
     df_hist = df_real.groupby('ds_date').agg({
@@ -156,33 +156,39 @@ elif sel_horizonte == 'Próximos 15 días':
 else:
     dias_a_proyectar = 30
 
-# CÁLCULO DE VARIABLES DINÁMICAS
+# DOW BASELINE CON REGLA SÁBADO > DOMINGO
 df_28d_clean = df_valid_reales[df_valid_reales['ds_date'] >= (max_fecha_real - pd.Timedelta(days=28))].copy()
 df_28d_clean['dow'] = df_28d_clean['ds_date'].dt.dayofweek
 
-# 1. Media y Desviación Estándar Orgánica por día de la semana
 real_dow_avg = df_28d_clean.groupby('dow')['orders_real'].mean().to_dict()
 real_dow_std = df_28d_clean.groupby('dow')['orders_real'].std().to_dict()
 
-# 2. Factor Momentum / Inercia Reciente (Últimas 2 semanas vs 2 semanas previas)
+# Corrección de estructura de fin de semana
+val_sabado = real_dow_avg.get(5, df_28d_clean['orders_real'].mean())
+val_domingo = real_dow_avg.get(6, df_28d_clean['orders_real'].mean())
+
+# Forzar que el domingo sea siempre un ~88% del sábado
+if val_domingo >= val_sabado:
+    real_dow_avg[6] = val_sabado * 0.88
+
+# Momentum
 df_14d_recent = df_valid_reales[df_valid_reales['ds_date'] >= (max_fecha_real - pd.Timedelta(days=14))]
 df_14d_prev = df_valid_reales[(df_valid_reales['ds_date'] >= (max_fecha_real - pd.Timedelta(days=28))) & 
                                (df_valid_reales['ds_date'] < (max_fecha_real - pd.Timedelta(days=14)))]
 
 if len(df_14d_prev) > 0 and df_14d_prev['orders_real'].mean() > 0:
     momentum_factor = df_14d_recent['orders_real'].mean() / df_14d_prev['orders_real'].mean()
-    momentum_factor = np.clip(momentum_factor, 0.96, 1.05)  # Acotado
+    momentum_factor = np.clip(momentum_factor, 0.96, 1.05)
 else:
     momentum_factor = 1.0
 
 max_historico_real = df_valid_reales['orders_real'].max() if len(df_valid_reales) > 0 else 9600.0
 dict_eventos = {e['fecha']: e['impacto_pct'] for e in st.session_state['eventos_custom']}
 
-# PROYECCIÓN DINÁMICA MULTIVARIABLE
+# PROYECCIÓN FUTURA
 fechas_futuras = [max_fecha_real + pd.Timedelta(days=i+1) for i in range(dias_a_proyectar)]
 y_proj_future = []
 
-# Semilla fija por fecha para varianza consistente pero no repetitiva
 np.random.seed(101)
 
 for i, f in enumerate(fechas_futuras):
@@ -191,34 +197,31 @@ for i, f in enumerate(fechas_futuras):
     std_dow = real_dow_std.get(dow, 250.0)
     if pd.isna(std_dow): std_dow = 250.0
     
-    # a. Varianza micro-orgánica (Ruido natural controlado ±2.5%)
-    ruido_organico = np.random.normal(0, std_dow * 0.35)
+    ruido_organico = np.random.normal(0, std_dow * 0.25)
     
-    # b. Factor Fase del Mes (Semanas 1 y 3 ligeramente más suaves; 2 y 4 más fuertes)
     dia_mes = f.day
     if 1 <= dia_mes <= 7 or 16 <= dia_mes <= 22:
-        factor_fase_mes = 0.985  # Resaca post-quincena
+        factor_fase_mes = 0.985
     else:
-        factor_fase_mes = 1.015  # Impulso pre/post cobro
+        factor_fase_mes = 1.015
         
-    # c. Gradiente Quincenal Dinámico por Día Exacto
-    if dia_mes in [15, 30, 31]:  # Día exacto de pago
-        mult_q = 1.16 if dow in [4, 5, 6] else 1.12
-    elif dia_mes in [1, 16]:      # Día posterior de cobro masivo
-        mult_q = 1.14 if dow in [4, 5, 6] else 1.10
-    elif dia_mes in [2, 14, 28, 29]: # Días periféricos de quincena
-        mult_q = 1.07
+    # Gradiente Quincenal (Sábado > Domingo en picos de cobro)
+    if dia_mes in [15, 30, 31]:
+        mult_q = 1.15 if dow == 5 else (1.08 if dow == 6 else 1.12)
+    elif dia_mes in [1, 16]:
+        mult_q = 1.12 if dow == 5 else (1.06 if dow == 6 else 1.10)
+    elif dia_mes in [2, 14, 28, 29]:
+        mult_q = 1.06
     else:
         mult_q = 1.0
 
-    # d. Modificador Ad-Hoc
+    # Modificador Ad-Hoc
     f_str = f.strftime('%Y-%m-%d')
     impacto_adhoc = dict_eventos.get(f_str, 0.0)
     mult_adhoc = 1.0 + impacto_adhoc
 
-    # Combinación Dinámica
     val_raw = (base_dow + ruido_organico) * momentum_factor * factor_fase_mes * mult_q * mult_adhoc
-    val_proyectado = min(val_raw, max_historico_real * 1.03)  # Cierre en techo real
+    val_proyectado = min(val_raw, max_historico_real * 1.03)
     
     y_proj_future.append(val_proyectado)
 
@@ -240,7 +243,7 @@ accuracy_60d = 100.0 - ((np.abs(df_60d['orders_real'] - df_60d['orders_forecast_
 # 5. DASHBOARD PRINCIPAL
 # -------------------------------------------------------------------------
 st.title(f"🚀 Dashboard de Proyección Operativa | {plaza_label}")
-st.caption(f"Modelo: Dinámico Multivariable (Momentum + Volatilidad Orgánica + Gradiente Quincenal). MTD Acumulado: **{orders_acumuladas_mtd:,}**.")
+st.caption(f"Modelo: Jerarquía Real Fin de Semana (Sábado > Domingo). MTD Acumulado: **{orders_acumuladas_mtd:,}**.")
 
 kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
 
@@ -257,7 +260,7 @@ kpi5.metric(
 
 st.markdown("---")
 
-st.subheader("📈 Evolución Diaria: Histórico Reales vs. Proyección Futura Orgánica Dinámica")
+st.subheader("📈 Evolución Diaria: Histórico Reales vs. Proyección Futura Calibrada")
 
 x_proj = [max_fecha_real] + fechas_futuras
 y_proj = [ultimo_val_real] + y_proj_future
@@ -279,7 +282,7 @@ fig.add_trace(go.Scatter(
     line=dict(color='#F59E0B', width=2, dash='dash')
 ))
 
-# Línea Roja Proyectada Orgánica y Variable
+# Línea Roja Proyectada
 fig.add_trace(go.Scatter(
     x=x_proj, y=y_proj,
     mode='lines+markers', name=f'Proyección Modelo ({dias_a_proyectar} días)',
