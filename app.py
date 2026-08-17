@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from google.cloud import bigquery
+from google.oauth2 import service_account
 
 # -------------------------------------------------------------------------
 # 1. CONFIGURACIÓN DE PÁGINA
@@ -32,7 +33,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # -------------------------------------------------------------------------
-# 2. CARGA DE DATOS DESDE BIGQUERY
+# 2. CARGA DE DATOS DESDE BIGQUERY CON AUTENTICACIÓN EXPLÍCITA
 # -------------------------------------------------------------------------
 @st.cache_data(ttl=3600)
 def cargar_datos_bigquery():
@@ -43,7 +44,10 @@ def cargar_datos_bigquery():
                 pk = creds_dict["private_key"]
                 pk = pk.replace("\\n", "\n").replace("\\_", "_")
                 creds_dict["private_key"] = pk
-            client = bigquery.Client.from_service_account_info(creds_dict)
+            
+            # Creación explícita de credenciales de Service Account
+            credentials = service_account.Credentials.from_service_account_info(creds_dict)
+            client = bigquery.Client(credentials=credentials, project=creds_dict.get("project_id", "peya-venezuela"))
         else:
             client = bigquery.Client(project='peya-venezuela')
 
@@ -98,8 +102,8 @@ def cargar_datos_bigquery():
         st.error(f"Error al conectar con BigQuery: {e}")
         st.stop()
 
-# Ejecución de carga de datos
-with st.spinner("Conectando con BigQuery..."):
+# Ejecución de carga
+with st.spinner("Conectando con BigQuery (peya-venezuela)..."):
     df_real = cargar_datos_bigquery()
 
 # -------------------------------------------------------------------------
