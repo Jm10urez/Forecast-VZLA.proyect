@@ -30,7 +30,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Initialize Session State for custom events
+# Inicializar Session State para eventos ad-hoc
 if 'eventos_custom' not in st.session_state:
     st.session_state['eventos_custom'] = []
 
@@ -51,7 +51,7 @@ def cargar_datos_csv():
 df_real = cargar_datos_csv()
 
 # -------------------------------------------------------------------------
-# 3. CONTROLES SIDEBAR
+# 3. CONTROLES SIDEBAR (LIMPIO Y SIN CONTROLES SOBRANTES)
 # -------------------------------------------------------------------------
 st.sidebar.image("https://upload.wikimedia.org/wikipedia/commons/d/d6/PedidosYa_Logo.png", width=180)
 st.sidebar.title("⚙️ Parámetros de Simulación")
@@ -63,14 +63,6 @@ sel_ciudad = st.sidebar.selectbox("🏙️ Vista / Ciudad:", opciones_vista)
 sel_horizonte = st.sidebar.selectbox("📅 Horizonte de Proyección:", ['Resto del Mes (MTD)', 'Próximos 15 días', 'Próximos 30 días'])
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("📈 Factor Quincena Implícito")
-pct_quincena_base = st.sidebar.slider(
-    "Uplift Quincena Base (%):", 
-    min_value=0.0, max_value=0.50, value=0.22, step=0.01,
-    help="El modelo aplica implícitamente este uplift en días 14-16 y 29-2, agregando picos extras los viernes y fines de semana."
-)
-
-st.sidebar.markdown("---")
 st.sidebar.subheader("🎯 Metas Operativas")
 target_utr = st.sidebar.slider("Target UTR (Órdenes/Hora):", min_value=1.20, max_value=2.50, value=1.65, step=0.05)
 target_cpo = st.sidebar.slider("Target CPO ($):", min_value=0.80, max_value=2.50, value=1.33, step=0.01)
@@ -79,7 +71,6 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("🌧️ Modificadores Ad-Hoc / Clustered Events")
 
 with st.sidebar.expander("➕ Agregar Impacto Específico por Día", expanded=False):
-    # Determine future date options
     df_valid_temp = df_real[df_real['orders_real'] > 0]
     max_date_temp = df_valid_temp['ds_date'].max() if len(df_valid_temp) > 0 else df_real['ds_date'].max()
     dias_opciones = [(max_date_temp + pd.Timedelta(days=i+1)).strftime('%Y-%m-%d') for i in range(30)]
@@ -115,8 +106,10 @@ if len(st.session_state['eventos_custom']) > 0:
         st.rerun()
 
 # -------------------------------------------------------------------------
-# 4. LÓGICA DE PROYECCIÓN
+# 4. LÓGICA DE PROYECCIÓN (QUINCENA INTERNA Y AUTOMÁTICA)
 # -------------------------------------------------------------------------
+pct_quincena_base = 0.22  # Quincena interna fija
+
 if sel_ciudad == 'TODAS (TOTAL VENEZUELA)':
     df_hist = df_real.groupby('ds_date').agg({
         'orders_forecast_rooster': 'sum',
@@ -188,18 +181,18 @@ for f in fechas_futuras:
     if base_f == 0.0:
         base_f = rooster_dow_avg.get(f.dayofweek, df_valid_28d['orders_forecast_rooster'].mean())
     
-    # 1. QUINCENA IMPLÍCITA
+    # 1. QUINCENA AUTOMÁTICA
     if f.day in dias_quincena:
         if f.dayofweek == 4:  # Viernes
-            mult_q = 1.0 + float(pct_quincena_base) + 0.15
+            mult_q = 1.0 + pct_quincena_base + 0.15
         elif f.dayofweek in [5, 6]:  # Finde
-            mult_q = 1.0 + float(pct_quincena_base) + 0.10
+            mult_q = 1.0 + pct_quincena_base + 0.10
         else:
-            mult_q = 1.0 + float(pct_quincena_base)
+            mult_q = 1.0 + pct_quincena_base
     else:
         mult_q = 1.0
 
-    # 2. MODIFICADOR AD-HOC (LLUVIA, FERIADO, PROMO, ETC.)
+    # 2. MODIFICADOR AD-HOC
     f_str = f.strftime('%Y-%m-%d')
     impacto_adhoc = dict_eventos.get(f_str, 0.0)
     mult_adhoc = 1.0 + impacto_adhoc
@@ -223,7 +216,7 @@ accuracy_60d = 100.0 - ((np.abs(df_60d['orders_real'] - df_60d['orders_forecast_
 # 5. DASHBOARD PRINCIPAL
 # -------------------------------------------------------------------------
 st.title(f"🚀 Dashboard de Proyección Operativa | {plaza_label}")
-st.caption(f"Modelo: Quincena Implícita + Modificadores Ad-Hoc. Último día real: **{max_fecha_real.strftime('%Y-%m-%d')}**.")
+st.caption(f"Modelo: Ponderación Quincenal Implícita + Clustered Events. Último día real: **{max_fecha_real.strftime('%Y-%m-%d')}**.")
 
 kpi1, kpi2, kpi3, kpi4 = st.columns(4)
 
@@ -239,7 +232,7 @@ kpi4.metric(
 
 st.markdown("---")
 
-st.subheader("📈 Evolución Diaria: Histórico Reales vs. Proyección Futura (Efectos Implícitos + Ad-Hoc)")
+st.subheader("📈 Evolución Diaria: Histórico Reales vs. Proyección Futura Continua")
 
 x_proj = [max_fecha_real] + fechas_futuras
 y_proj = [ultimo_val_real] + y_proj_future
