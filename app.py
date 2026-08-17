@@ -35,21 +35,33 @@ st.markdown("""
 # -------------------------------------------------------------------------
 # 2. CARGA DE DATOS DESDE BIGQUERY CON AUTENTICACIÓN EXPLÍCITA
 # -------------------------------------------------------------------------
+# -------------------------------------------------------------------------
+# 2. CARGA DE DATOS DESDE BIGQUERY
+# -------------------------------------------------------------------------
 @st.cache_data(ttl=3600)
 def cargar_datos_bigquery():
     try:
+        # Validación directa de presencia de secretos
+        if not hasattr(st, "secrets") or len(st.secrets) == 0:
+            st.error("❌ No se encontraron Secrets configurados en Streamlit Cloud.")
+            st.stop()
+
+        # Intenta obtener el bloque del Service Account (admite gcp_service_account o la raíz)
         if "gcp_service_account" in st.secrets:
             creds_dict = dict(st.secrets["gcp_service_account"])
-            if "private_key" in creds_dict:
-                pk = creds_dict["private_key"]
-                pk = pk.replace("\\n", "\n").replace("\\_", "_")
-                creds_dict["private_key"] = pk
-            
-            # Creación explícita de credenciales de Service Account
-            credentials = service_account.Credentials.from_service_account_info(creds_dict)
-            client = bigquery.Client(credentials=credentials, project=creds_dict.get("project_id", "peya-venezuela"))
         else:
-            client = bigquery.Client(project='peya-venezuela')
+            creds_dict = dict(st.secrets)
+
+        if "private_key" in creds_dict:
+            pk = creds_dict["private_key"]
+            pk = pk.replace("\\n", "\n").replace("\\_", "_")
+            creds_dict["private_key"] = pk
+
+        credentials = service_account.Credentials.from_service_account_info(creds_dict)
+        client = bigquery.Client(
+            credentials=credentials, 
+            project=creds_dict.get("project_id", "peya-venezuela")
+        )
 
         sql_query = """
         WITH 
@@ -99,13 +111,8 @@ def cargar_datos_bigquery():
         df['ds_date'] = pd.to_datetime(df['ds_date'])
         return df
     except Exception as e:
-        st.error(f"Error al conectar con BigQuery: {e}")
+        st.error(f"Error de autenticación o consulta en BigQuery: {e}")
         st.stop()
-
-# Ejecución de carga
-with st.spinner("Conectando con BigQuery (peya-venezuela)..."):
-    df_real = cargar_datos_bigquery()
-
 # -------------------------------------------------------------------------
 # 3. CONTROLES SIDEBAR
 # -------------------------------------------------------------------------
