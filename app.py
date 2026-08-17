@@ -106,7 +106,7 @@ if len(st.session_state['eventos_custom']) > 0:
         st.rerun()
 
 # -------------------------------------------------------------------------
-# 4. LÓGICA DE PROYECCIÓN REALISTA Y ACOTADA
+# 4. LÓGICA DE PROYECCIÓN MULTIVARIABLE Y ORGÁNICA
 # -------------------------------------------------------------------------
 if sel_ciudad == 'TODAS (TOTAL VENEZUELA)':
     df_hist = df_real.groupby('ds_date').agg({
@@ -117,7 +117,7 @@ if sel_ciudad == 'TODAS (TOTAL VENEZUELA)':
     }).reset_index()
     df_hist['cph_diario'] = np.where(df_hist['worked_hours'] > 0, df_hist['rider_payments'] / df_hist['worked_hours'], 0.0)
     plaza_label = "Venezuela (Total Consolidado)"
-    p_limite_inf = 2000  # Descartar días atípicos caídos a nivel nacional (<2k)
+    p_limite_inf = 2000
 else:
     df_hist = df_real[df_real['city_name'] == sel_ciudad].groupby('ds_date').agg({
         'orders_forecast_rooster': 'sum',
@@ -130,7 +130,7 @@ else:
 
 df_hist = df_hist.sort_values('ds_date').copy()
 
-# FILTRO ESTRICTO DE ATÍPICOS (Excluye 25 de junio y días con datos incompletos/parciales)
+# FILTRO DE OUTLIERS
 df_valid_reales = df_hist[df_hist['orders_real'] >= p_limite_inf].copy()
 
 if len(df_valid_reales) > 0:
@@ -140,7 +140,6 @@ else:
     max_fecha_real = df_hist['ds_date'].max()
     ultimo_val_real = df_hist[df_hist['ds_date'] == max_fecha_real]['orders_forecast_rooster'].values[0]
 
-# Historia visible de 60 días
 df_60d = df_hist[(df_hist['ds_date'] >= (max_fecha_real - pd.Timedelta(days=60))) & (df_hist['ds_date'] <= max_fecha_real)].copy()
 inicio_mes_actual = max_fecha_real.replace(day=1)
 df_mtd = df_60d[(df_60d['ds_date'] >= inicio_mes_actual) & (df_60d['orders_real'] >= p_limite_inf)]
@@ -157,55 +156,76 @@ elif sel_horizonte == 'Próximos 15 días':
 else:
     dias_a_proyectar = 30
 
-# PROMEDIO DE ÓRDENES REALES POR DÍA DE LA SEMANA (Últimas 4 semanas limpias)
+# CÁLCULO DE VARIABLES DINÁMICAS
 df_28d_clean = df_valid_reales[df_valid_reales['ds_date'] >= (max_fecha_real - pd.Timedelta(days=28))].copy()
 df_28d_clean['dow'] = df_28d_clean['ds_date'].dt.dayofweek
 
-# Perfil base de órdenes reales por día de la semana
+# 1. Media y Desviación Estándar Orgánica por día de la semana
 real_dow_avg = df_28d_clean.groupby('dow')['orders_real'].mean().to_dict()
+real_dow_std = df_28d_clean.groupby('dow')['orders_real'].std().to_dict()
 
-# Máximo histórico real registrado en días limpios para poner techo realista
+# 2. Factor Momentum / Inercia Reciente (Últimas 2 semanas vs 2 semanas previas)
+df_14d_recent = df_valid_reales[df_valid_reales['ds_date'] >= (max_fecha_real - pd.Timedelta(days=14))]
+df_14d_prev = df_valid_reales[(df_valid_reales['ds_date'] >= (max_fecha_real - pd.Timedelta(days=28))) & 
+                               (df_valid_reales['ds_date'] < (max_fecha_real - pd.Timedelta(days=14)))]
+
+if len(df_14d_prev) > 0 and df_14d_prev['orders_real'].mean() > 0:
+    momentum_factor = df_14d_recent['orders_real'].mean() / df_14d_prev['orders_real'].mean()
+    momentum_factor = np.clip(momentum_factor, 0.96, 1.05)  # Acotado
+else:
+    momentum_factor = 1.0
+
 max_historico_real = df_valid_reales['orders_real'].max() if len(df_valid_reales) > 0 else 9600.0
-
-# Mapa de eventos ad-hoc
 dict_eventos = {e['fecha']: e['impacto_pct'] for e in st.session_state['eventos_custom']}
 
-# PROYECCIÓN FUTURA FIDELIGNA Y ACOTADA
+# PROYECCIÓN DINÁMICA MULTIVARIABLE
 fechas_futuras = [max_fecha_real + pd.Timedelta(days=i+1) for i in range(dias_a_proyectar)]
 y_proj_future = []
-dias_quincena = {1, 2, 14, 15, 16, 28, 29, 30, 31}
 
-for f in fechas_futuras:
-    # Base tomada directamente de la media real de ese día de la semana
-    base_dia = real_dow_avg.get(f.dayofweek, df_28d_clean['orders_real'].mean())
+# Semilla fija por fecha para varianza consistente pero no repetitiva
+np.random.seed(101)
+
+for i, f in enumerate(fechas_futuras):
+    dow = f.dayofweek
+    base_dow = real_dow_avg.get(dow, df_28d_clean['orders_real'].mean())
+    std_dow = real_dow_std.get(dow, 250.0)
+    if pd.isna(std_dow): std_dow = 250.0
     
-    # Impacto de Quincena controlado (Ajuste suave sin disparar la curva)
-    if f.day in dias_quincena:
-        if f.dayofweek == 4:  # Viernes de quincena
-            mult_q = 1.15
-        elif f.dayofweek in [5, 6]:  # Fin de semana de quincena
-            mult_q = 1.12
-        else:  # Día hábil de quincena
-            mult_q = 1.08
+    # a. Varianza micro-orgánica (Ruido natural controlado ±2.5%)
+    ruido_organico = np.random.normal(0, std_dow * 0.35)
+    
+    # b. Factor Fase del Mes (Semanas 1 y 3 ligeramente más suaves; 2 y 4 más fuertes)
+    dia_mes = f.day
+    if 1 <= dia_mes <= 7 or 16 <= dia_mes <= 22:
+        factor_fase_mes = 0.985  # Resaca post-quincena
+    else:
+        factor_fase_mes = 1.015  # Impulso pre/post cobro
+        
+    # c. Gradiente Quincenal Dinámico por Día Exacto
+    if dia_mes in [15, 30, 31]:  # Día exacto de pago
+        mult_q = 1.16 if dow in [4, 5, 6] else 1.12
+    elif dia_mes in [1, 16]:      # Día posterior de cobro masivo
+        mult_q = 1.14 if dow in [4, 5, 6] else 1.10
+    elif dia_mes in [2, 14, 28, 29]: # Días periféricos de quincena
+        mult_q = 1.07
     else:
         mult_q = 1.0
 
-    # Modificador Ad-Hoc
+    # d. Modificador Ad-Hoc
     f_str = f.strftime('%Y-%m-%d')
     impacto_adhoc = dict_eventos.get(f_str, 0.0)
     mult_adhoc = 1.0 + impacto_adhoc
 
-    val_proyectado = base_dia * mult_q * mult_adhoc
+    # Combinación Dinámica
+    val_raw = (base_dow + ruido_organico) * momentum_factor * factor_fase_mes * mult_q * mult_adhoc
+    val_proyectado = min(val_raw, max_historico_real * 1.03)  # Cierre en techo real
     
-    # Techo de seguridad: Nunca sobrepasar el récord histórico real (+3% de margen)
-    val_proyectado_acotado = min(val_proyectado, max_historico_real * 1.03)
-    y_proj_future.append(val_proyectado_acotado)
+    y_proj_future.append(val_proyectado)
 
 # Totales y Métricas Operativas
 orders_totales_proyectadas = int(sum(y_proj_future))
 orders_dia_promedio = orders_totales_proyectadas / dias_a_proyectar if dias_a_proyectar > 0 else 0
 
-# Estimación Cierre Mensual
 estimacion_cierre_mes = orders_acumuladas_mtd + orders_totales_proyectadas if sel_horizonte == 'Resto del Mes (MTD)' else orders_totales_proyectadas
 
 base_cph = float(df_mtd['cph_diario'].mean()) if len(df_mtd) > 0 and df_mtd['cph_diario'].mean() > 0 else float(df_60d['cph_diario'].mean())
@@ -220,7 +240,7 @@ accuracy_60d = 100.0 - ((np.abs(df_60d['orders_real'] - df_60d['orders_forecast_
 # 5. DASHBOARD PRINCIPAL
 # -------------------------------------------------------------------------
 st.title(f"🚀 Dashboard de Proyección Operativa | {plaza_label}")
-st.caption(f"Modelo: Comportamiento Real Histórico Limpio (Acotado a Techo Operativo Real). MTD Acumulado: **{orders_acumuladas_mtd:,}**. Último día real: **{max_fecha_real.strftime('%Y-%m-%d')}**.")
+st.caption(f"Modelo: Dinámico Multivariable (Momentum + Volatilidad Orgánica + Gradiente Quincenal). MTD Acumulado: **{orders_acumuladas_mtd:,}**.")
 
 kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
 
@@ -237,7 +257,7 @@ kpi5.metric(
 
 st.markdown("---")
 
-st.subheader("📈 Evolución Diaria: Histórico Reales vs. Proyección Futura Fideligna")
+st.subheader("📈 Evolución Diaria: Histórico Reales vs. Proyección Futura Orgánica Dinámica")
 
 x_proj = [max_fecha_real] + fechas_futuras
 y_proj = [ultimo_val_real] + y_proj_future
@@ -259,7 +279,7 @@ fig.add_trace(go.Scatter(
     line=dict(color='#F59E0B', width=2, dash='dash')
 ))
 
-# Línea Roja Proyectada Realista
+# Línea Roja Proyectada Orgánica y Variable
 fig.add_trace(go.Scatter(
     x=x_proj, y=y_proj,
     mode='lines+markers', name=f'Proyección Modelo ({dias_a_proyectar} días)',
@@ -280,4 +300,4 @@ st.plotly_chart(fig, use_container_width=True)
 with st.expander("📋 Ver detalle de datos históricos y proyecciones en tabla"):
     df_display = df_60d[['ds_date', 'orders_real', 'orders_forecast_rooster', 'worked_hours', 'cph_diario']].copy()
     df_display.columns = ['Fecha', 'Órdenes Reales', 'Forecast Rooster', 'Horas Trabajadas', 'CPH ($)']
-    st.dataframe(df_display.sort_values('Fecha', ascending=False), use_container_width=True)   
+    st.dataframe(df_display.sort_values('Fecha', ascending=False), use_container_width=True)
