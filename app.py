@@ -193,21 +193,32 @@ kpi3.metric("🎯 Target UTR", f"{target_utr:.2f}")
 st.markdown("---")
 
 # -------------------------------------------------------------------------
-# 6. CONSTRUCCIÓN DE LOS DOS CUADROS INDEPENDIENTES
+# 6. VINCULACIÓN CORRECTA DE PROYECCIÓN FUTURA PARA LAS MATRICES
 # -------------------------------------------------------------------------
-df_grid_hist = df_hist[['ds_date', 'orders_forecast_rooster', 'orders_real']].copy()
-df_grid_hist.columns = ['ds_date', 'rooster', 'sugerido']
+map_proyeccion = {f.strftime('%Y-%m-%d'): y_proj_future[idx] for idx, f in enumerate(fechas_futuras)}
 
-val_rooster_ref = df_grid_hist['rooster'].tail(14).mean() if len(df_grid_hist) > 0 else 6801.0
+# Construir rango completo de fechas (Histórico + Futuro)
+todas_fechas = pd.date_range(start=df_hist['ds_date'].min(), end=fechas_futuras[-1])
+df_grid_base = pd.DataFrame({'ds_date': todas_fechas})
 
-df_grid_fut = pd.DataFrame({
-    'ds_date': fechas_futuras,
-    'rooster': [val_rooster_ref]*len(fechas_futuras),
-    'sugerido': y_proj_future
-})
+# Unir con histórico real y forecast
+df_grid_all = pd.merge(df_grid_base, df_hist[['ds_date', 'orders_forecast_rooster', 'orders_real']], on='ds_date', how='left')
 
-df_grid_all = pd.concat([df_grid_hist, df_grid_fut], ignore_index=True)
-df_grid_all['ds_date'] = pd.to_datetime(df_grid_all['ds_date'])
+# Asignar Rooster Base
+val_rooster_ref = df_grid_hist['orders_forecast_rooster'].tail(14).mean() if 'df_grid_hist' in locals() and len(df_grid_hist) > 0 else 6801.0
+df_grid_all['rooster'] = df_grid_all['orders_forecast_rooster'].fillna(val_rooster_ref)
+
+# Asignar Sugerido: Si es fecha futura usa el modelo, si es pasada usa el real
+def obtener_sugerido(row):
+    f_str = row['ds_date'].strftime('%Y-%m-%d')
+    if f_str in map_proyeccion:
+        return map_proyeccion[f_str]
+    elif pd.notna(row['orders_real']) and row['orders_real'] > 0:
+        return row['orders_real']
+    else:
+        return row['rooster']
+
+df_grid_all['sugerido'] = df_grid_all.apply(obtener_sugerido, axis=1)
 
 df_grid_all['week_start'] = df_grid_all['ds_date'].apply(lambda d: d - pd.Timedelta(days=d.weekday()))
 df_grid_all['dow_name'] = df_grid_all['ds_date'].dt.strftime('%A')
@@ -237,7 +248,7 @@ for sem in semanas_unicas:
         match = df_sem[df_sem['dow_name'] == dow]
         col_target = cols[idx + 1]
         
-        if len(match) > 0:
+        if len(match) > 0 and match['rooster'].values[0] > 0:
             val_rooster = match['rooster'].values[0]
             with col_target.container(border=True):
                 st.caption("Rooster")
@@ -267,7 +278,7 @@ for sem in semanas_unicas:
         match = df_sem[df_sem['dow_name'] == dow]
         col_target = cols[idx + 1]
         
-        if len(match) > 0:
+        if len(match) > 0 and match['sugerido'].values[0] > 0:
             val_rooster = match['rooster'].values[0]
             val_sug = match['sugerido'].values[0]
             var_pct = ((val_sug - val_rooster) / val_rooster * 100) if val_rooster > 0 else 0.0
