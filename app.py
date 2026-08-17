@@ -36,38 +36,69 @@ st.markdown("""
 # -------------------------------------------------------------------------
 @st.cache_data(ttl=3600)
 def cargar_datos_bigquery():
-    if "gcp_service_account" in st.secrets:
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        # Reemplaza saltos de línea escapados si existen en el diccionario
-        if "private_key" in creds_dict:
-            creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-            
-        client = bigquery.Client.from_service_account_info(creds_dict)
-    else:
-        client = bigquery.Client(project='peya-venezuela')
+    try:
+        if "gcp_service_account" in st.secrets:
+            creds_dict = dict(st.secrets["gcp_service_account"])
+            if "private_key" in creds_dict:
+                creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+            client = bigquery.Client.from_service_account_info(creds_dict)
+        else:
+            client = bigquery.Client(project='peya-venezuela')
 
-# -------------------------------------------------------------------------
-# 3. CONTROLES SIDEBAR
-# -------------------------------------------------------------------------
-st.sidebar.image("https://upload.wikimedia.org/wikipedia/commons/d/d6/PedidosYa_Logo.png", width=180)
-st.sidebar.title("⚙️ Parámetros de Simulación")
+        sql_query = """
+        WITH 
+        daily_staffing AS (
+            SELECT 
+                DATE(SAFE_CAST(staffing.created_date_local AS TIMESTAMP)) AS ds_date,
+                staffing.city_name AS city_name,
+                SUM(staffing.adjusted_orders) AS orders_forecast_rooster,
+                SUM(staffing.orders_actuals) AS orders_real,
+                SUM(staffing.evaluations_working_time) / 3600.0 AS worked_hours
+            FROM `peya-data-origins-pro.cl_hurrier.staffing_kpi` AS staffing
+            WHERE SAFE_CAST(staffing.created_date_local AS TIMESTAMP) >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 180 DAY)
+              AND staffing.country_code = 've'
+            GROUP BY 1, 2
+        ),
+        daily_payments AS (
+            SELECT 
+                DATE(SAFE_CAST(payments.created_date AS TIMESTAMP)) AS ds_date,
+                SUM(payments.total_date_payment) AS rider_payments
+            FROM `peya-data-origins-pro.cl_hurrier.rider_payments` AS payments
+            WHERE SAFE_CAST(payments.created_date AS TIMESTAMP) >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 180 DAY)
+              AND payments.country_code = 've'
+            GROUP BY 1
+        )
+        SELECT 
+            s.ds_date,
+            s.city_name,
+            s.orders_forecast_rooster,
+            s.orders_real,
+            ROUND(s.worked_hours, 2) AS worked_hours,
+            p.rider_payments,
+            ROUND(SAFE_DIVIDE(s.orders_real, s.worked_hours), 2) AS utr_diario,
+            ROUND(SAFE_DIVIDE(p.rider_payments, s.orders_real), 2) AS cpo_diario,
+            ROUND(SAFE_DIVIDE(p.rider_payments, s.worked_hours), 2) AS cph_diario
+        FROM daily_staffing s
+        LEFT JOIN daily_payments p ON s.ds_date = p.ds_date
+        ORDER BY s.ds_date ASC, s.city_name ASC;
+        """
+        
+        df = client.query(sql_query).to_dataframe()
+        
+        columnas_num = ['orders_forecast_rooster', 'orders_real', 'worked_hours', 'rider_payments', 'utr_diario', 'cpo_diario', 'cph_diario']
+        for col in columnas_num:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+                
+        df['ds_date'] = pd.to_datetime(df['ds_date'])
+        return df
+    except Exception as e:
+        st.error(f"Error al conectar con BigQuery: {e}")
+        st.stop()
 
-ciudades_lista = sorted([str(c) for c in df_real['city_name'].dropna().unique() if str(c) not in ['None', 'nan']])
-opciones_vista = ['TODAS (TOTAL VENEZUELA)'] + ciudades_lista
-
-sel_ciudad = st.sidebar.selectbox("🏙️ Vista / Ciudad:", opciones_vista)
-sel_horizonte = st.sidebar.selectbox("📅 Horizonte de Proyección:", ['Resto del Mes (MTD)', 'Próximos 15 días', 'Próximos 30 días'])
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("📈 Modificadores de Demanda")
-aplica_quincena = st.sidebar.checkbox("💰 ¿Aplica Efecto Quincena?", value=True)
-pct_impacto = st.sidebar.slider("Incremental Vol. Quincena (%):", min_value=0.0, max_value=0.50, value=0.20, step=0.01)
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("🎯 Metas Operativas y Financieras")
-target_utr = st.sidebar.slider("Target UTR (Órdenes/Hora):", min_value=1.5, max_value=4.5, value=2.8, step=0.1)
-target_cpo = st.sidebar.slider("Target CPO ($):", min_value=0.80, max=2.50, value=1.35, step=0.05)
-
+# LLAMADA OBLIGATORIA A LA FUNCIÓN (Fuera de la definición)
+with st.spinner("Conectando con BigQuery..."):
+    df_real = cargar_datos_bigquery()
 # -------------------------------------------------------------------------
 # 4. LÓGICA DE PROYECCIÓN
 # -------------------------------------------------------------------------
