@@ -34,7 +34,7 @@ if 'eventos_custom' not in st.session_state:
     st.session_state['eventos_custom'] = []
 
 # -------------------------------------------------------------------------
-# 2. CARGA DE DATOS DESDE ARCHIVO LOCAL CSV
+# 2. CARGA DE DATOS DESDE ARCHIVO LOCAL CSV CON DETECCIÓN FLEXIBLE DE COLUMNAS
 # -------------------------------------------------------------------------
 @st.cache_data
 def cargar_datos_csv():
@@ -48,6 +48,18 @@ def cargar_datos_csv():
     return df
 
 df_real = cargar_datos_csv()
+
+# Función para encontrar columnas de forma flexible (case-insensitive)
+def buscar_columna(df, posibles_nombres):
+    cols_lower = {c.lower(): c for c in df.columns}
+    for p in posibles_nombres:
+        if p.lower() in cols_lower:
+            return cols_lower[p.lower()]
+    return None
+
+col_ciudad = buscar_columna(df_real, ['city_name', 'city', 'ciudad'])
+col_zona = buscar_columna(df_real, ['zone_name', 'zone', 'subzone_name', 'subzone', 'zona'])
+col_hora = buscar_columna(df_real, ['hour', 'hora', 'time_block', 'time_hour', 'time'])
 
 # -------------------------------------------------------------------------
 # 3. CONTROLES SIDEBAR (CONFIGURACIÓN GLOBAL Y EVENTOS AD-HOC)
@@ -231,34 +243,38 @@ kpi5.metric(
 st.markdown("---")
 
 # -------------------------------------------------------------------------
-# 6. FILTROS EXCLUSIVOS PARA LAS TABLAS DE FORECAST Y SUGERIDO
+# 6. FILTROS EXCLUSIVOS PARA LAS TABLAS (CIUDAD, ZONA Y HORA SIEMPRE VISIBLES)
 # -------------------------------------------------------------------------
 with st.expander("🔍 **Filtros Exclusivos para Tablas de Forecast y Sugerido**", expanded=True):
     f_col1, f_col2, f_col3 = st.columns(3)
     
-    ciudades_lista = sorted([str(c) for c in df_real['city_name'].dropna().unique() if str(c) not in ['None', 'nan']])
+    # 1. Filtro Ciudad
+    if col_ciudad:
+        ciudades_lista = sorted([str(c) for c in df_real[col_ciudad].dropna().unique() if str(c) not in ['None', 'nan']])
+    else:
+        ciudades_lista = []
     sel_ciudad_tbl = f_col1.selectbox("🏙️ Ciudad (Tablas):", ['TODAS'] + ciudades_lista)
 
-    df_temp_ciudad = df_real if sel_ciudad_tbl == 'TODAS' else df_real[df_real['city_name'] == sel_ciudad_tbl]
+    df_temp_ciudad = df_real if (not col_ciudad or sel_ciudad_tbl == 'TODAS') else df_real[df_real[col_ciudad] == sel_ciudad_tbl]
 
-    col_zona = 'zone_name' if 'zone_name' in df_real.columns else ('subzone_name' if 'subzone_name' in df_real.columns else None)
+    # 2. Filtro Zona
     if col_zona:
         zonas_lista = sorted([str(z) for z in df_temp_ciudad[col_zona].dropna().unique() if str(z) not in ['None', 'nan']])
-        sel_zona_tbl = f_col2.selectbox("📍 Zona / Subzona (Tablas):", ['TODAS'] + zonas_lista)
     else:
-        sel_zona_tbl = 'TODAS'
+        zonas_lista = []
+    sel_zona_tbl = f_col2.selectbox("📍 Zona / Subzona (Tablas):", ['TODAS'] + zonas_lista)
 
-    col_hora = 'hour' if 'hour' in df_real.columns else ('time_block' if 'time_block' in df_real.columns else None)
+    # 3. Filtro Hora
     if col_hora:
-        horas_lista = sorted([int(h) for h in df_temp_ciudad[col_hora].dropna().unique() if pd.notna(h)])
-        sel_hora_tbl = f_col3.selectbox("⏰ Hora (Tablas):", ['TODAS'] + horas_lista)
+        horas_lista = sorted([str(h) for h in df_temp_ciudad[col_hora].dropna().unique() if str(h) not in ['None', 'nan']])
     else:
-        sel_hora_tbl = 'TODAS'
+        horas_lista = []
+    sel_hora_tbl = f_col3.selectbox("⏰ Hora (Tablas):", ['TODAS'] + horas_lista)
 
-# Filtrar subset para las tablas
+# Aplicar filtrado a los datos
 df_filtered_tbl = df_real.copy()
-if sel_ciudad_tbl != 'TODAS':
-    df_filtered_tbl = df_filtered_tbl[df_filtered_tbl['city_name'] == sel_ciudad_tbl]
+if col_ciudad and sel_ciudad_tbl != 'TODAS':
+    df_filtered_tbl = df_filtered_tbl[df_filtered_tbl[col_ciudad] == sel_ciudad_tbl]
 if col_zona and sel_zona_tbl != 'TODAS':
     df_filtered_tbl = df_filtered_tbl[df_filtered_tbl[col_zona] == sel_zona_tbl]
 if col_hora and sel_hora_tbl != 'TODAS':
