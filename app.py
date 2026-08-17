@@ -31,53 +31,11 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # -------------------------------------------------------------------------
-# 2. CARGA DE DATOS CON STREAMLIT CONNECTION (BIGQUERY)
+# 2. CARGA DE DATOS DESDE ARCHIVO LOCAL CSV
 # -------------------------------------------------------------------------
-@st.cache_data(ttl=3600)
-def cargar_datos_bigquery():
-    # Inicializa la conexión nativa de Streamlit para BigQuery
-    conn = st.connection("bigquery", type="bigquery")
-
-    sql_query = """
-    WITH 
-    daily_staffing AS (
-        SELECT 
-            DATE(SAFE_CAST(staffing.created_date_local AS TIMESTAMP)) AS ds_date,
-            staffing.city_name AS city_name,
-            SUM(staffing.adjusted_orders) AS orders_forecast_rooster,
-            SUM(staffing.orders_actuals) AS orders_real,
-            SUM(staffing.evaluations_working_time) / 3600.0 AS worked_hours
-        FROM `peya-data-origins-pro.cl_hurrier.staffing_kpi` AS staffing
-        WHERE SAFE_CAST(staffing.created_date_local AS TIMESTAMP) >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 180 DAY)
-          AND staffing.country_code = 've'
-        GROUP BY 1, 2
-    ),
-    daily_payments AS (
-        SELECT 
-            DATE(SAFE_CAST(payments.created_date AS TIMESTAMP)) AS ds_date,
-            SUM(payments.total_date_payment) AS rider_payments
-        FROM `peya-data-origins-pro.cl_hurrier.rider_payments` AS payments
-        WHERE SAFE_CAST(payments.created_date AS TIMESTAMP) >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 180 DAY)
-          AND payments.country_code = 've'
-        GROUP BY 1
-    )
-    SELECT 
-        s.ds_date,
-        s.city_name,
-        s.orders_forecast_rooster,
-        s.orders_real,
-        ROUND(s.worked_hours, 2) AS worked_hours,
-        p.rider_payments,
-        ROUND(SAFE_DIVIDE(s.orders_real, s.worked_hours), 2) AS utr_diario,
-        ROUND(SAFE_DIVIDE(p.rider_payments, s.orders_real), 2) AS cpo_diario,
-        ROUND(SAFE_DIVIDE(p.rider_payments, s.worked_hours), 2) AS cph_diario
-    FROM daily_staffing s
-    LEFT JOIN daily_payments p ON s.ds_date = p.ds_date
-    ORDER BY s.ds_date ASC, s.city_name ASC;
-    """
-    
-    df = conn.query(sql_query)
-    
+@st.cache_data
+def cargar_datos_csv():
+    df = pd.read_csv("datos.csv")
     columnas_num = ['orders_forecast_rooster', 'orders_real', 'worked_hours', 'rider_payments', 'utr_diario', 'cpo_diario', 'cph_diario']
     for col in columnas_num:
         if col in df.columns:
@@ -86,8 +44,7 @@ def cargar_datos_bigquery():
     df['ds_date'] = pd.to_datetime(df['ds_date'])
     return df
 
-with st.spinner("Conectando con BigQuery (peya-venezuela)..."):
-    df_real = cargar_datos_bigquery()
+df_real = cargar_datos_csv()
 
 # -------------------------------------------------------------------------
 # 3. CONTROLES SIDEBAR
@@ -166,7 +123,7 @@ accuracy_60d = 100.0 - ((np.abs(df_60d['orders_real'] - df_60d['orders_forecast_
 # 5. DASHBOARD PRINCIPAL
 # -------------------------------------------------------------------------
 st.title(f"🚀 Dashboard de Proyección Operativa | {plaza_label}")
-st.caption(f"Datos desde BigQuery (`peya-venezuela`). Horizonte: **{dias_a_proyectar} días**. Precisión del modelo (Últ. 60D): **{accuracy_60d:.1f}%**.")
+st.caption(f"Datos locales cargados. Horizonte: **{dias_a_proyectar} días**. Precisión del modelo (Últ. 60D): **{accuracy_60d:.1f}%**.")
 
 kpi1, kpi2, kpi3, kpi4 = st.columns(4)
 
@@ -224,4 +181,4 @@ with st.expander("📋 Ver detalle de datos en tabla"):
     df_display = df_60d[['ds_date', 'orders_real', 'orders_forecast_rooster', 'worked_hours', 'cph_diario']].copy()
     df_display.columns = ['Fecha', 'Órdenes Reales', 'Forecast Rooster', 'Horas Trabajadas', 'CPH ($)']
     st.dataframe(df_display.sort_values('Fecha', ascending=False), use_container_width=True)
-
+   
