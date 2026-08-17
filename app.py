@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -60,19 +59,19 @@ sel_ciudad = st.sidebar.selectbox("🏙️ Vista / Ciudad:", opciones_vista)
 sel_horizonte = st.sidebar.selectbox("📅 Horizonte de Proyección:", ['Resto del Mes (MTD)', 'Próximos 15 días', 'Próximos 30 días'])
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("📈 Modificadores de Demanda")
-aplica_quincena = st.sidebar.checkbox("💰 ¿Aplica Efecto Quincena?", value=True)
-pct_impacto = st.sidebar.slider("Incremental Vol. Quincena (%):", min_value=0.0, max_value=0.50, value=0.20, step=0.01)
+st.sidebar.subheader("📈 Efecto Calendario & Quincena")
+aplica_quincena = st.sidebar.checkbox("💰 ¿Activar Pico de Quincena?", value=True)
+pct_impacto = st.sidebar.slider("Uplift Quincena (%):", min_value=0.0, max_value=0.60, value=0.25, step=0.01,
+                                 help="Aumento porcentual en órdenes aplicado EXCLUSIVAMENTE a los días de quincena (14-16 y 29-2).")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🎯 Metas Operativas y Financieras")
-# Ajuste de rango de UTR entre 1.2 y 2.5 (centrado en la meta de 1.6 - 1.7)
+# Rango centrado en tus metas reales: 1.6 - 1.7 UTR y $1.33 CPO
 target_utr = st.sidebar.slider("Target UTR (Órdenes/Hora):", min_value=1.20, max_value=2.50, value=1.65, step=0.05)
-# Ajuste del Target CPO a $1.33 por defecto
 target_cpo = st.sidebar.slider("Target CPO ($):", min_value=0.80, max_value=2.50, value=1.33, step=0.01)
 
 # -------------------------------------------------------------------------
-# 4. LÓGICA DE PROYECCIÓN Y MODELO DINÁMICO
+# 4. LÓGICA DE PROYECCIÓN Y MODELO QUINCENAL Y ESTACIONAL
 # -------------------------------------------------------------------------
 if sel_ciudad == 'TODAS (TOTAL VENEZUELA)':
     df_hist = df_real.groupby('ds_date').agg({
@@ -98,7 +97,7 @@ df_60d = df_hist[df_hist['ds_date'] >= (max_fecha - pd.Timedelta(days=60))].copy
 inicio_mes_actual = max_fecha.replace(day=1)
 df_mtd = df_60d[df_60d['ds_date'] >= inicio_mes_actual]
 
-# Cálculo del Horizonte
+# Horizonte
 if sel_horizonte == 'Resto del Mes (MTD)':
     ultimo_dia_mes = pd.date_range(start=inicio_mes_actual, periods=1, freq='ME')[0]
     dias_a_proyectar = (ultimo_dia_mes - max_fecha).days
@@ -109,26 +108,33 @@ elif sel_horizonte == 'Próximos 15 días':
 else:
     dias_a_proyectar = 30
 
-# MODELO DE PROYECCIÓN PONDERADO POR DÍA DE LA SEMANA (4 ÚLTIMAS SEMANAS)
+# MODELO: DÍA DE LA SEMANA + EFECTO QUINCENA CALENDARIO
 df_28d = df_hist[df_hist['ds_date'] >= (max_fecha - pd.Timedelta(days=28))].copy()
 df_28d['day_of_week'] = df_28d['ds_date'].dt.dayofweek
 
-# Factor promedio por día de la semana (Lunes=0, Domingo=6)
 dow_factors = df_28d.groupby('day_of_week')['orders_forecast_rooster'].mean().to_dict()
 overall_mean = df_28d['orders_forecast_rooster'].mean() if len(df_28d) > 0 else 1.0
 
-# Generar secuencia futura con estacionalidad diaria
 fechas_futuras = [max_fecha + pd.Timedelta(days=i+1) for i in range(dias_a_proyectar)]
-mult_vol = 1.0 + (float(pct_impacto) if aplica_quincena else 0.0)
-
 y_proj_future = []
+
+# Definición de días con efecto quincena (14,15,16, 29,30,31, 1,2)
+dias_quincena = {1, 2, 14, 15, 16, 29, 30, 31}
+
 for f in fechas_futuras:
     dow = f.dayofweek
-    base_dow = dow_factors.get(dow, overall_mean)
-    val_proyectado = base_dow * mult_vol
+    base_val = dow_factors.get(dow, overall_mean)
+    
+    # Aplica el uplift SOLO si la fecha cae en periodo de quincena
+    if aplica_quincena and (f.day in dias_quincena):
+        mult = 1.0 + float(pct_impacto)
+    else:
+        mult = 1.0
+        
+    val_proyectado = base_val * mult
     y_proj_future.append(val_proyectado)
 
-# Totales proyectados
+# Totales y Métricas
 orders_totales_proyectadas = int(sum(y_proj_future))
 orders_dia_promedio = orders_totales_proyectadas / dias_a_proyectar if dias_a_proyectar > 0 else 0
 
@@ -144,7 +150,7 @@ accuracy_60d = 100.0 - ((np.abs(df_60d['orders_real'] - df_60d['orders_forecast_
 # 5. DASHBOARD PRINCIPAL
 # -------------------------------------------------------------------------
 st.title(f"🚀 Dashboard de Proyección Operativa | {plaza_label}")
-st.caption(f"Modelo: Estacional por Día de la Semana + Modificador de Demanda. Horizonte: **{dias_a_proyectar} días**. Precisión histórica (Últ. 60D): **{accuracy_60d:.1f}%**.")
+st.caption(f"Modelo: Estacionalidad Semanal + Calendario Quincenal. Horizonte: **{dias_a_proyectar} días**. Precisión histórica (Últ. 60D): **{accuracy_60d:.1f}%**.")
 
 kpi1, kpi2, kpi3, kpi4 = st.columns(4)
 
@@ -160,7 +166,7 @@ kpi4.metric(
 
 st.markdown("---")
 
-st.subheader("📈 Evolución Diaria: Histórico (Últimos 2 Meses) vs. Proyección Dinámica Futura")
+st.subheader("📈 Evolución Diaria: Histórico (Últimos 2 Meses) vs. Proyección Quincenal Futura")
 
 x_proj = [max_fecha] + fechas_futuras
 y_proj = [df_60d[df_60d['ds_date'] == max_fecha]['orders_real'].values[0]] + y_proj_future
@@ -182,7 +188,7 @@ fig.add_trace(go.Scatter(
     line=dict(color='#F59E0B', width=2, dash='dash')
 ))
 
-# Línea Roja de Proyección Futura Dinámica
+# Línea Roja de Proyección Futura Quincenal
 fig.add_trace(go.Scatter(
     x=x_proj, y=y_proj,
     mode='lines+markers', name=f'Proyección Modelo ({dias_a_proyectar} días)',
