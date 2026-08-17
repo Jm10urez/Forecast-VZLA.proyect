@@ -106,7 +106,7 @@ if len(st.session_state['eventos_custom']) > 0:
         st.rerun()
 
 # -------------------------------------------------------------------------
-# 4. LÓGICA DE PROYECCIÓN CALIBRADA A EXACTAMENTE 232K (SÁBADO > DOMINGO)
+# 4. LÓGICA DE PROYECCIÓN (VIERNES > SÁBADO > DOMINGO)
 # -------------------------------------------------------------------------
 if sel_ciudad == 'TODAS (TOTAL VENEZUELA)':
     df_hist = df_real.groupby('ds_date').agg({
@@ -140,7 +140,7 @@ else:
     max_fecha_real = df_hist['ds_date'].max()
     ultimo_val_real = df_hist[df_hist['ds_date'] == max_fecha_real]['orders_forecast_rooster'].values[0]
 
-# Extraer el MTD real transcurrido
+# Extraer MTD real
 inicio_mes_actual = max_fecha_real.replace(day=1)
 df_mtd_ejecutado = df_valid_reales[(df_valid_reales['ds_date'] >= inicio_mes_actual) & (df_valid_reales['ds_date'] <= max_fecha_real)]
 orders_acumuladas_mtd = int(df_mtd_ejecutado['orders_real'].sum())
@@ -168,39 +168,54 @@ real_dow_std = df_28d_clean.groupby('dow')['orders_real'].std().to_dict()
 
 dict_eventos = {e['fecha']: e['impacto_pct'] for e in st.session_state['eventos_custom']}
 
-# FACTOR DE ESCALA AJUSTADO (+7% para lograr ~232,000 exactas)
-factor_escala_232k = 1.07
-
+# PROYECCIÓN CON JERARQUÍA: VIERNES > SÁBADO > DOMINGO
 y_proj_future = []
 np.random.seed(101)
 
-ult_sabado_val = real_dow_avg.get(5, 8500) * factor_escala_232k
+ult_viernes_val = real_dow_avg.get(4, 9000)
+ult_sabado_val = ult_viernes_val * 0.93
 
 for f in fechas_futuras:
-    dow = f.dayofweek
+    dow = f.dayofweek # 0: Lunes ... 4: Viernes, 5: Sábado, 6: Domingo
     std_dow = real_dow_std.get(dow, 200.0)
     if pd.isna(std_dow): std_dow = 200.0
     
-    ruido_organico = np.random.normal(0, std_dow * 0.15)
+    ruido_organico = np.random.normal(0, std_dow * 0.12)
     dia_mes = f.day
     
-    # Quincena por DOW
-    if dia_mes in [14, 15, 16, 28, 29, 30, 31]:
-        mult_q = 1.12 if dow == 5 else (1.08 if dow == 4 else 1.03)
+    is_quincena = dia_mes in [14, 15, 16, 28, 29, 30, 31, 1, 2]
+    
+    if is_quincena:
+        if dow == 4:      # Viernes de Quincena (Pico Máximo Absoluto ~9,100 - 9,400)
+            mult_q = 1.26
+        elif dow == 5:    # Sábado de Quincena
+            mult_q = 1.18
+        elif dow == 6:    # Domingo de Quincena
+            mult_q = 1.05
+        else:             # Día Hábil de Quincena
+            mult_q = 1.08
     else:
-        mult_q = 1.0
+        if dow in [0, 1, 2]: # Lunes, Martes, Miércoles fuera de quincena (~6,000 - 6,400)
+            mult_q = 0.92
+        elif dow in [3, 4]:  # Jueves, Viernes fuera de quincena
+            mult_q = 0.96
+        else:                # Finde fuera de quincena
+            mult_q = 0.95
 
     f_str = f.strftime('%Y-%m-%d')
     impacto_adhoc = dict_eventos.get(f_str, 0.0)
     mult_adhoc = 1.0 + impacto_adhoc
 
-    if dow == 5: # Sábado
-        val_raw = (real_dow_avg.get(5, 8500) + ruido_organico) * factor_escala_232k * mult_q * mult_adhoc
-        ult_sabado_val = val_raw
-    elif dow == 6: # Domingo (Estricto 86% del Sábado)
+    if dow == 4:   # Viernes (Pico)
+        val_raw = (real_dow_avg.get(4, 9000) + ruido_organico) * mult_q * mult_adhoc
+        ult_viernes_val = val_raw
+        ult_sabado_val = ult_viernes_val * 0.93
+    elif dow == 5: # Sábado (93% del Viernes)
+        val_raw = ult_sabado_val
+    elif dow == 6: # Domingo (86% del Sábado)
         val_raw = ult_sabado_val * 0.86
-    else: # Resto de días
-        val_raw = (real_dow_avg.get(dow, 7000) + ruido_organico) * factor_escala_232k * mult_q * mult_adhoc
+    else:          # Días hábiles
+        val_raw = (real_dow_avg.get(dow, 7000) + ruido_organico) * mult_q * mult_adhoc
 
     val_proyectado = min(val_raw, 9600.0)
     y_proj_future.append(val_proyectado)
@@ -225,7 +240,7 @@ delta_cpo = cpo_proyectado - target_cpo
 # 5. DASHBOARD PRINCIPAL
 # -------------------------------------------------------------------------
 st.title(f"🚀 Dashboard de Proyección Operativa | {plaza_label}")
-st.caption(f"Modelo Calibrado a Target ~232K (Sábado > Domingo). MTD Acumulado: **{orders_acumuladas_mtd:,}**.")
+st.caption(f"Modelo Calibrado: Viernes > Sábado > Domingo (~232K). MTD Acumulado: **{orders_acumuladas_mtd:,}**.")
 
 kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
 
