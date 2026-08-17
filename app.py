@@ -106,10 +106,8 @@ if len(st.session_state['eventos_custom']) > 0:
         st.rerun()
 
 # -------------------------------------------------------------------------
-# 4. LÓGICA DE PROYECCIÓN CALIBRADA A TARGET REAL DE ~240K
+# 4. LÓGICA DE PROYECCIÓN REALISTA Y ACOTADA
 # -------------------------------------------------------------------------
-pct_quincena_base = 0.28  # Ajuste calibrado de quincena para ritmo mensual ~240k
-
 if sel_ciudad == 'TODAS (TOTAL VENEZUELA)':
     df_hist = df_real.groupby('ds_date').agg({
         'orders_forecast_rooster': 'sum',
@@ -119,7 +117,7 @@ if sel_ciudad == 'TODAS (TOTAL VENEZUELA)':
     }).reset_index()
     df_hist['cph_diario'] = np.where(df_hist['worked_hours'] > 0, df_hist['rider_payments'] / df_hist['worked_hours'], 0.0)
     plaza_label = "Venezuela (Total Consolidado)"
-    p_limite_inf = 500
+    p_limite_inf = 2000  # Descartar días atípicos caídos a nivel nacional (<2k)
 else:
     df_hist = df_real[df_real['city_name'] == sel_ciudad].groupby('ds_date').agg({
         'orders_forecast_rooster': 'sum',
@@ -128,21 +126,12 @@ else:
         'cph_diario': 'mean'
     }).reset_index()
     plaza_label = sel_ciudad
-    p_limite_inf = 50
+    p_limite_inf = 100
 
 df_hist = df_hist.sort_values('ds_date').copy()
 
-# FILTRO DE OUTLIERS (Exclusión 25 de junio y cierres incompletos)
-df_pos = df_hist[df_hist['orders_real'] > p_limite_inf].copy()
-if len(df_pos) > 10:
-    q25 = df_pos['orders_real'].quantile(0.25)
-    q75 = df_pos['orders_real'].quantile(0.75)
-    iqr = q75 - q25
-    umbral_limite = max(p_limite_inf, q25 - 1.5 * iqr)
-else:
-    umbral_limite = p_limite_inf
-
-df_valid_reales = df_hist[df_hist['orders_real'] >= umbral_limite].copy()
+# FILTRO ESTRICTO DE ATÍPICOS (Excluye 25 de junio y días con datos incompletos/parciales)
+df_valid_reales = df_hist[df_hist['orders_real'] >= p_limite_inf].copy()
 
 if len(df_valid_reales) > 0:
     max_fecha_real = df_valid_reales['ds_date'].max()
@@ -151,10 +140,10 @@ else:
     max_fecha_real = df_hist['ds_date'].max()
     ultimo_val_real = df_hist[df_hist['ds_date'] == max_fecha_real]['orders_forecast_rooster'].values[0]
 
-# Filtramos la historia visible
+# Historia visible de 60 días
 df_60d = df_hist[(df_hist['ds_date'] >= (max_fecha_real - pd.Timedelta(days=60))) & (df_hist['ds_date'] <= max_fecha_real)].copy()
 inicio_mes_actual = max_fecha_real.replace(day=1)
-df_mtd = df_60d[(df_60d['ds_date'] >= inicio_mes_actual) & (df_60d['orders_real'] >= umbral_limite)]
+df_mtd = df_60d[(df_60d['ds_date'] >= inicio_mes_actual) & (df_60d['orders_real'] >= p_limite_inf)]
 orders_acumuladas_mtd = int(df_mtd['orders_real'].sum())
 
 # Horizonte
@@ -168,56 +157,55 @@ elif sel_horizonte == 'Próximos 15 días':
 else:
     dias_a_proyectar = 30
 
-# CALCULO DE EJECUCIÓN (Ponderación con piso mínimo de salud operativa para alcanzar ~240k)
-df_valid_28d = df_valid_reales[df_valid_reales['ds_date'] >= (max_fecha_real - pd.Timedelta(days=28))].copy()
+# PROMEDIO DE ÓRDENES REALES POR DÍA DE LA SEMANA (Últimas 4 semanas limpias)
+df_28d_clean = df_valid_reales[df_valid_reales['ds_date'] >= (max_fecha_real - pd.Timedelta(days=28))].copy()
+df_28d_clean['dow'] = df_28d_clean['ds_date'].dt.dayofweek
 
-if len(df_valid_28d) > 0 and df_valid_28d['orders_forecast_rooster'].sum() > 0:
-    ratio_calculado = df_valid_28d['orders_real'].sum() / df_valid_28d['orders_forecast_rooster'].sum()
-    ratio_ejecucion = max(0.98, ratio_calculado)  # Calibración a la tendencia real alta de VE
-else:
-    ratio_ejecucion = 1.0
+# Perfil base de órdenes reales por día de la semana
+real_dow_avg = df_28d_clean.groupby('dow')['orders_real'].mean().to_dict()
+
+# Máximo histórico real registrado en días limpios para poner techo realista
+max_historico_real = df_valid_reales['orders_real'].max() if len(df_valid_reales) > 0 else 9600.0
 
 # Mapa de eventos ad-hoc
 dict_eventos = {e['fecha']: e['impacto_pct'] for e in st.session_state['eventos_custom']}
 
-# PROYECCIÓN FUTURA
+# PROYECCIÓN FUTURA FIDELIGNA Y ACOTADA
 fechas_futuras = [max_fecha_real + pd.Timedelta(days=i+1) for i in range(dias_a_proyectar)]
 y_proj_future = []
 dias_quincena = {1, 2, 14, 15, 16, 28, 29, 30, 31}
 
-df_future_lookup = df_hist.set_index('ds_date')['orders_forecast_rooster'].to_dict()
-df_valid_28d['dow'] = df_valid_28d['ds_date'].dt.dayofweek
-rooster_dow_avg = df_valid_28d.groupby('dow')['orders_forecast_rooster'].mean().to_dict()
-
 for f in fechas_futuras:
-    base_f = df_future_lookup.get(f, 0.0)
-    if base_f == 0.0:
-        base_f = rooster_dow_avg.get(f.dayofweek, df_valid_28d['orders_forecast_rooster'].mean())
+    # Base tomada directamente de la media real de ese día de la semana
+    base_dia = real_dow_avg.get(f.dayofweek, df_28d_clean['orders_real'].mean())
     
-    # QUINCENA AUTOMÁTICA
+    # Impacto de Quincena controlado (Ajuste suave sin disparar la curva)
     if f.day in dias_quincena:
-        if f.dayofweek == 4:  # Viernes
-            mult_q = 1.0 + pct_quincena_base + 0.15
-        elif f.dayofweek in [5, 6]:  # Finde
-            mult_q = 1.0 + pct_quincena_base + 0.10
-        else:
-            mult_q = 1.0 + pct_quincena_base
+        if f.dayofweek == 4:  # Viernes de quincena
+            mult_q = 1.15
+        elif f.dayofweek in [5, 6]:  # Fin de semana de quincena
+            mult_q = 1.12
+        else:  # Día hábil de quincena
+            mult_q = 1.08
     else:
         mult_q = 1.0
 
-    # MODIFICADOR AD-HOC
+    # Modificador Ad-Hoc
     f_str = f.strftime('%Y-%m-%d')
     impacto_adhoc = dict_eventos.get(f_str, 0.0)
     mult_adhoc = 1.0 + impacto_adhoc
 
-    val_proyectado = base_f * ratio_ejecucion * mult_q * mult_adhoc
-    y_proj_future.append(val_proyectado)
+    val_proyectado = base_dia * mult_q * mult_adhoc
+    
+    # Techo de seguridad: Nunca sobrepasar el récord histórico real (+3% de margen)
+    val_proyectado_acotado = min(val_proyectado, max_historico_real * 1.03)
+    y_proj_future.append(val_proyectado_acotado)
 
 # Totales y Métricas Operativas
 orders_totales_proyectadas = int(sum(y_proj_future))
 orders_dia_promedio = orders_totales_proyectadas / dias_a_proyectar if dias_a_proyectar > 0 else 0
 
-# Estimación cierre total de mes
+# Estimación Cierre Mensual
 estimacion_cierre_mes = orders_acumuladas_mtd + orders_totales_proyectadas if sel_horizonte == 'Resto del Mes (MTD)' else orders_totales_proyectadas
 
 base_cph = float(df_mtd['cph_diario'].mean()) if len(df_mtd) > 0 and df_mtd['cph_diario'].mean() > 0 else float(df_60d['cph_diario'].mean())
@@ -232,7 +220,7 @@ accuracy_60d = 100.0 - ((np.abs(df_60d['orders_real'] - df_60d['orders_forecast_
 # 5. DASHBOARD PRINCIPAL
 # -------------------------------------------------------------------------
 st.title(f"🚀 Dashboard de Proyección Operativa | {plaza_label}")
-st.caption(f"Modelo Calibrado a Cierre Objetivo (~240K ord/mes). MTD Acumulado Reales: **{orders_acumuladas_mtd:,}**. Último día real: **{max_fecha_real.strftime('%Y-%m-%d')}**.")
+st.caption(f"Modelo: Comportamiento Real Histórico Limpio (Acotado a Techo Operativo Real). MTD Acumulado: **{orders_acumuladas_mtd:,}**. Último día real: **{max_fecha_real.strftime('%Y-%m-%d')}**.")
 
 kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
 
@@ -249,7 +237,7 @@ kpi5.metric(
 
 st.markdown("---")
 
-st.subheader("📈 Evolución Diaria: Histórico Reales vs. Proyección Futura Calibrada (~240K Mensual)")
+st.subheader("📈 Evolución Diaria: Histórico Reales vs. Proyección Futura Fideligna")
 
 x_proj = [max_fecha_real] + fechas_futuras
 y_proj = [ultimo_val_real] + y_proj_future
@@ -271,7 +259,7 @@ fig.add_trace(go.Scatter(
     line=dict(color='#F59E0B', width=2, dash='dash')
 ))
 
-# Línea Roja Proyectada Calibrada
+# Línea Roja Proyectada Realista
 fig.add_trace(go.Scatter(
     x=x_proj, y=y_proj,
     mode='lines+markers', name=f'Proyección Modelo ({dias_a_proyectar} días)',
@@ -292,5 +280,4 @@ st.plotly_chart(fig, use_container_width=True)
 with st.expander("📋 Ver detalle de datos históricos y proyecciones en tabla"):
     df_display = df_60d[['ds_date', 'orders_real', 'orders_forecast_rooster', 'worked_hours', 'cph_diario']].copy()
     df_display.columns = ['Fecha', 'Órdenes Reales', 'Forecast Rooster', 'Horas Trabajadas', 'CPH ($)']
-    st.dataframe(df_display.sort_values('Fecha', ascending=False), use_container_width=True)
-        
+    st.dataframe(df_display.sort_values('Fecha', ascending=False), use_container_width=True)   
