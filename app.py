@@ -30,7 +30,6 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Inicializar Session State para eventos ad-hoc
 if 'eventos_custom' not in st.session_state:
     st.session_state['eventos_custom'] = []
 
@@ -51,34 +50,11 @@ def cargar_datos_csv():
 df_real = cargar_datos_csv()
 
 # -------------------------------------------------------------------------
-# 3. CONTROLES SIDEBAR (FILTROS DE ROOSTER + EVENTOS AD-HOC)
+# 3. CONTROLES SIDEBAR (CONFIGURACIÓN GLOBAL Y EVENTOS AD-HOC)
 # -------------------------------------------------------------------------
 st.sidebar.image("https://upload.wikimedia.org/wikipedia/commons/d/d6/PedidosYa_Logo.png", width=180)
-st.sidebar.title("⚙️ Filtros de Rooster")
+st.sidebar.title("⚙️ Configuración Global")
 
-# 1. Filtro Ciudad
-ciudades_lista = sorted([str(c) for c in df_real['city_name'].dropna().unique() if str(c) not in ['None', 'nan']])
-sel_ciudad = st.sidebar.selectbox("🏙️ Ciudad:", ['TODAS'] + ciudades_lista)
-
-df_temp_ciudad = df_real if sel_ciudad == 'TODAS' else df_real[df_real['city_name'] == sel_ciudad]
-
-# 2. Filtro Zona
-col_zona = 'zone_name' if 'zone_name' in df_real.columns else ('subzone_name' if 'subzone_name' in df_real.columns else None)
-if col_zona:
-    zonas_lista = sorted([str(z) for z in df_temp_ciudad[col_zona].dropna().unique() if str(z) not in ['None', 'nan']])
-    sel_zona = st.sidebar.selectbox("📍 Zona / Subzona:", ['TODAS'] + zonas_lista)
-else:
-    sel_zona = 'TODAS'
-
-# 3. Filtro Hora
-col_hora = 'hour' if 'hour' in df_real.columns else ('time_block' if 'time_block' in df_real.columns else None)
-if col_hora:
-    horas_lista = sorted([int(h) for h in df_temp_ciudad[col_hora].dropna().unique() if pd.notna(h)])
-    sel_hora = st.sidebar.selectbox("⏰ Hora:", ['TODAS'] + horas_lista)
-else:
-    sel_hora = 'TODAS'
-
-st.sidebar.markdown("---")
 sel_horizonte = st.sidebar.selectbox("📅 Horizonte de Proyección:", ['Resto del Mes (MTD)', 'Próximos 15 días', 'Próximos 30 días'])
 
 st.sidebar.markdown("---")
@@ -86,9 +62,6 @@ st.sidebar.subheader("🎯 Metas Operativas")
 target_utr = st.sidebar.slider("Target UTR (Órdenes/Hora):", min_value=1.20, max_value=2.50, value=1.65, step=0.05)
 target_cpo = st.sidebar.slider("Target CPO ($):", min_value=0.80, max_value=2.50, value=1.33, step=0.01)
 
-# -------------------------------------------------------------------------
-# SECCIÓN: MODIFICADORES AD-HOC / CLUSTERED EVENTS (LLUVIA, EVENTOS, ETC.)
-# -------------------------------------------------------------------------
 st.sidebar.markdown("---")
 st.sidebar.subheader("🌧️ Modificadores Ad-Hoc / Clustered Events")
 
@@ -128,44 +101,32 @@ if len(st.session_state['eventos_custom']) > 0:
         st.rerun()
 
 # -------------------------------------------------------------------------
-# 4. FILTRADO DE DATOS Y LÓGICA DE PROYECCIÓN CALIBRADA A EXACTAMENTE 232K
+# 4. LÓGICA DE PROYECCIÓN GLOBAL CALIBRADA (~232K)
 # -------------------------------------------------------------------------
-df_filtered = df_real.copy()
-
-if sel_ciudad != 'TODAS':
-    df_filtered = df_filtered[df_filtered['city_name'] == sel_ciudad]
-if col_zona and sel_zona != 'TODAS':
-    df_filtered = df_filtered[df_filtered[col_zona] == sel_zona]
-if col_hora and sel_hora != 'TODAS':
-    df_filtered = df_filtered[df_filtered[col_hora] == sel_hora]
-
-# Agrupación diaria con filtros
-df_hist = df_filtered.groupby('ds_date').agg({
+df_hist_global = df_real.groupby('ds_date').agg({
     'orders_forecast_rooster': 'sum',
     'orders_real': 'sum',
     'worked_hours': 'sum',
-    'rider_payments': 'first' if 'rider_payments' in df_filtered.columns else 'sum'
+    'rider_payments': 'first' if 'rider_payments' in df_real.columns else 'sum'
 }).reset_index()
 
-df_hist['cph_diario'] = np.where(df_hist['worked_hours'] > 0, df_hist.get('rider_payments', 0) / df_hist['worked_hours'], 0.0)
-df_hist = df_hist.sort_values('ds_date').copy()
+df_hist_global['cph_diario'] = np.where(df_hist_global['worked_hours'] > 0, df_hist_global.get('rider_payments', 0) / df_hist_global['worked_hours'], 0.0)
+df_hist_global = df_hist_global.sort_values('ds_date').copy()
 
-p_limite_inf = 50 if sel_ciudad != 'TODAS' else 2000
-df_valid_reales = df_hist[df_hist['orders_real'] >= p_limite_inf].copy()
+p_limite_inf = 2000
+df_valid_reales = df_hist_global[df_hist_global['orders_real'] >= p_limite_inf].copy()
 
 if len(df_valid_reales) > 0:
     max_fecha_real = df_valid_reales['ds_date'].max()
     ultimo_val_real = df_valid_reales[df_valid_reales['ds_date'] == max_fecha_real]['orders_real'].values[0]
 else:
-    max_fecha_real = df_hist['ds_date'].max()
-    ultimo_val_real = df_hist[df_hist['ds_date'] == max_fecha_real]['orders_forecast_rooster'].values[0]
+    max_fecha_real = df_hist_global['ds_date'].max()
+    ultimo_val_real = df_hist_global[df_hist_global['ds_date'] == max_fecha_real]['orders_forecast_rooster'].values[0]
 
-# Extraer MTD real ejecutado
 inicio_mes_actual = max_fecha_real.replace(day=1)
 df_mtd_ejecutado = df_valid_reales[(df_valid_reales['ds_date'] >= inicio_mes_actual) & (df_valid_reales['ds_date'] <= max_fecha_real)]
 orders_acumuladas_mtd = int(df_mtd_ejecutado['orders_real'].sum())
 
-# Definición del Horizonte Futuro
 if sel_horizonte == 'Resto del Mes (MTD)':
     ultimo_dia_mes = pd.date_range(start=inicio_mes_actual, periods=1, freq='ME')[0]
     fechas_futuras = pd.date_range(start=max_fecha_real + pd.Timedelta(days=1), end=ultimo_dia_mes)
@@ -177,9 +138,8 @@ else:
     fechas_futuras = pd.date_range(start=max_fecha_real + pd.Timedelta(days=1), periods=30)
     dias_a_proyectar = 30
 
-df_60d = df_hist[(df_hist['ds_date'] >= (max_fecha_real - pd.Timedelta(days=60))) & (df_hist['ds_date'] <= max_fecha_real)].copy()
+df_60d = df_hist_global[(df_hist_global['ds_date'] >= (max_fecha_real - pd.Timedelta(days=60))) & (df_hist_global['ds_date'] <= max_fecha_real)].copy()
 
-# DOW BASELINE DE ÚLTIMAS 4 SEMANAS
 df_28d_clean = df_valid_reales[df_valid_reales['ds_date'] >= (max_fecha_real - pd.Timedelta(days=28))].copy()
 df_28d_clean['dow'] = df_28d_clean['ds_date'].dt.dayofweek
 
@@ -188,16 +148,15 @@ real_dow_std = df_28d_clean.groupby('dow')['orders_real'].std().to_dict()
 
 dict_eventos = {e['fecha']: e['impacto_pct'] for e in st.session_state['eventos_custom']}
 
-# PASO 1: FORMA DE CURVA (QUINCENAS PRONUNCIADAS + VIERNES > SÁBADO > DOMINGO)
 y_proj_raw = []
 np.random.seed(101)
 
-ult_viernes_raw = real_dow_avg.get(4, 9000 if sel_ciudad == 'TODAS' else 300)
+ult_viernes_raw = real_dow_avg.get(4, 9000)
 
 for f in fechas_futuras:
-    dow = f.dayofweek # 0: Lunes ... 4: Viernes, 5: Sábado, 6: Domingo
-    std_dow = real_dow_std.get(dow, 200.0 if sel_ciudad == 'TODAS' else 15.0)
-    if pd.isna(std_dow): std_dow = 200.0 if sel_ciudad == 'TODAS' else 15.0
+    dow = f.dayofweek
+    std_dow = real_dow_std.get(dow, 200.0)
+    if pd.isna(std_dow): std_dow = 200.0
     
     ruido_organico = np.random.normal(0, std_dow * 0.10)
     dia_mes = f.day
@@ -205,45 +164,36 @@ for f in fechas_futuras:
     is_quincena = dia_mes in [14, 15, 16, 28, 29, 30, 31, 1, 2]
     
     if is_quincena:
-        if dow == 4: mult_q = 1.30      # Viernes Quincena (Pico)
-        elif dow in [0, 1, 2, 3]: mult_q = 1.10 # Hábil Quincena
+        if dow == 4: mult_q = 1.30
+        elif dow in [0, 1, 2, 3]: mult_q = 1.10
         else: mult_q = 1.15
     else:
-        if dow in [0, 1, 2]: mult_q = 0.86     # Resaca Lunes-Miércoles
+        if dow in [0, 1, 2]: mult_q = 0.86
         elif dow in [3, 4]: mult_q = 0.94
         else: mult_q = 0.95
 
-    # Aplicar modificador ad-hoc (Lluvia, eventos, etc.)
     f_str = f.strftime('%Y-%m-%d')
     impacto_adhoc = dict_eventos.get(f_str, 0.0)
     mult_adhoc = 1.0 + impacto_adhoc
 
-    base_v = real_dow_avg.get(4, 9000 if sel_ciudad == 'TODAS' else 300)
-    base_d = real_dow_avg.get(dow, 6800 if sel_ciudad == 'TODAS' else 200)
-
-    if dow == 4:   # VIERNES (Pico de la semana)
-        val = (base_v + ruido_organico) * mult_q * mult_adhoc
+    if dow == 4:
+        val = (real_dow_avg.get(4, 9000) + ruido_organico) * mult_q * mult_adhoc
         ult_viernes_raw = val
-    elif dow == 5: # SÁBADO (88% del Viernes)
+    elif dow == 5:
         val = ult_viernes_raw * 0.88 * mult_adhoc
-    elif dow == 6: # DOMINGO (82% del Sábado)
+    elif dow == 6:
         val = ult_viernes_raw * 0.88 * 0.82 * mult_adhoc
-    else:          # DÍAS HÁBILES
-        val = (base_d + ruido_organico) * mult_q * mult_adhoc
+    else:
+        val = (real_dow_avg.get(dow, 6800) + ruido_organico) * mult_q * mult_adhoc
 
     y_proj_raw.append(val)
 
-# PASO 2: ESCALADO EXACTO SEGÚN VISTA Y TARGET
-if sel_ciudad == 'TODAS':
-    TARGET_MES_EXACTO = 232000
-    falta_exacto = (TARGET_MES_EXACTO - orders_acumuladas_mtd) if sel_horizonte == 'Resto del Mes (MTD)' else TARGET_MES_EXACTO
-    sum_raw = sum(y_proj_raw)
-    factor_exactitud = (falta_exacto / sum_raw) if sum_raw > 0 else 1.0
-    y_proj_future = [min(v * factor_exactitud, 9600.0) for v in y_proj_raw]
-else:
-    y_proj_future = y_proj_raw
+TARGET_MES_EXACTO = 232000
+falta_exacto = (TARGET_MES_EXACTO - orders_acumuladas_mtd) if sel_horizonte == 'Resto del Mes (MTD)' else TARGET_MES_EXACTO
+sum_raw = sum(y_proj_raw)
+factor_exactitud = (falta_exacto / sum_raw) if sum_raw > 0 else 1.0
+y_proj_future = [min(v * factor_exactitud, 9600.0) for v in y_proj_raw]
 
-# Totales y Métricas Operativas
 orders_totales_proyectadas = int(round(sum(y_proj_future)))
 orders_dia_promedio = orders_totales_proyectadas / dias_a_proyectar if dias_a_proyectar > 0 else 0
 
@@ -260,10 +210,10 @@ cpo_proyectado = costo_total_pago / orders_totales_proyectadas if orders_totales
 delta_cpo = cpo_proyectado - target_cpo
 
 # -------------------------------------------------------------------------
-# 5. DASHBOARD PRINCIPAL Y KPIS
+# 5. DASHBOARD PRINCIPAL Y KPIS GLOBALES
 # -------------------------------------------------------------------------
-st.title("🚀 Dashboard de Proyección Operativa | Vista Comparativa")
-st.caption(f"Filtros Activos: Ciudad: **{sel_ciudad}** | Zona: **{sel_zona}** | Hora: **{sel_hora}**")
+st.title("🚀 Dashboard de Proyección Operativa | PedidosYa VE")
+st.caption(f"Modelo Calibrado a Target ~232K. MTD Acumulado: **{orders_acumuladas_mtd:,}**.")
 
 kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
 
@@ -281,16 +231,55 @@ kpi5.metric(
 st.markdown("---")
 
 # -------------------------------------------------------------------------
-# 6. CONSTRUCCIÓN DE LAS DOS MATRICES SEMANALES
+# 6. FILTROS EXCLUSIVOS PARA LAS TABLAS DE FORECAST Y SUGERIDO
+# -------------------------------------------------------------------------
+with st.expander("🔍 **Filtros Exclusivos para Tablas de Forecast y Sugerido**", expanded=True):
+    f_col1, f_col2, f_col3 = st.columns(3)
+    
+    ciudades_lista = sorted([str(c) for c in df_real['city_name'].dropna().unique() if str(c) not in ['None', 'nan']])
+    sel_ciudad_tbl = f_col1.selectbox("🏙️ Ciudad (Tablas):", ['TODAS'] + ciudades_lista)
+
+    df_temp_ciudad = df_real if sel_ciudad_tbl == 'TODAS' else df_real[df_real['city_name'] == sel_ciudad_tbl]
+
+    col_zona = 'zone_name' if 'zone_name' in df_real.columns else ('subzone_name' if 'subzone_name' in df_real.columns else None)
+    if col_zona:
+        zonas_lista = sorted([str(z) for z in df_temp_ciudad[col_zona].dropna().unique() if str(z) not in ['None', 'nan']])
+        sel_zona_tbl = f_col2.selectbox("📍 Zona / Subzona (Tablas):", ['TODAS'] + zonas_lista)
+    else:
+        sel_zona_tbl = 'TODAS'
+
+    col_hora = 'hour' if 'hour' in df_real.columns else ('time_block' if 'time_block' in df_real.columns else None)
+    if col_hora:
+        horas_lista = sorted([int(h) for h in df_temp_ciudad[col_hora].dropna().unique() if pd.notna(h)])
+        sel_hora_tbl = f_col3.selectbox("⏰ Hora (Tablas):", ['TODAS'] + horas_lista)
+    else:
+        sel_hora_tbl = 'TODAS'
+
+# Filtrar subset para las tablas
+df_filtered_tbl = df_real.copy()
+if sel_ciudad_tbl != 'TODAS':
+    df_filtered_tbl = df_filtered_tbl[df_filtered_tbl['city_name'] == sel_ciudad_tbl]
+if col_zona and sel_zona_tbl != 'TODAS':
+    df_filtered_tbl = df_filtered_tbl[df_filtered_tbl[col_zona] == sel_zona_tbl]
+if col_hora and sel_hora_tbl != 'TODAS':
+    df_filtered_tbl = df_filtered_tbl[df_filtered_tbl[col_hora] == sel_hora_tbl]
+
+df_hist_tbl = df_filtered_tbl.groupby('ds_date').agg({
+    'orders_forecast_rooster': 'sum',
+    'orders_real': 'sum'
+}).reset_index()
+
+# -------------------------------------------------------------------------
+# CONSTRUCCIÓN DE MATRICES SEMANALES CON FILTROS APLICADOS
 # -------------------------------------------------------------------------
 map_proyeccion = {f.strftime('%Y-%m-%d'): y_proj_future[idx] for idx, f in enumerate(fechas_futuras)}
 
-todas_fechas = pd.date_range(start=df_hist['ds_date'].min(), end=fechas_futuras[-1])
+todas_fechas = pd.date_range(start=df_hist_global['ds_date'].min(), end=fechas_futuras[-1])
 df_grid_base = pd.DataFrame({'ds_date': todas_fechas})
 
-df_grid_all = pd.merge(df_grid_base, df_hist[['ds_date', 'orders_forecast_rooster', 'orders_real']], on='ds_date', how='left')
+df_grid_all = pd.merge(df_grid_base, df_hist_tbl[['ds_date', 'orders_forecast_rooster', 'orders_real']], on='ds_date', how='left')
 
-val_rooster_ref = df_hist['orders_forecast_rooster'].tail(14).mean() if len(df_hist) > 0 else 6801.0
+val_rooster_ref = df_hist_tbl['orders_forecast_rooster'].tail(14).mean() if len(df_hist_tbl) > 0 else 6801.0
 df_grid_all['rooster'] = df_grid_all['orders_forecast_rooster'].fillna(val_rooster_ref)
 
 def obtener_sugerido(row):
@@ -313,7 +302,7 @@ dias_espanol = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado',
 semanas_unicas = sorted(df_grid_all['week_start'].unique(), reverse=True)[:5]
 
 # --- CUADRO 1: FORECAST BASE DE ROOSTER ---
-st.subheader("📊 1. Forecast Base de Rooster")
+st.subheader("📊 1. Forecast Base de Rooster (Filtrado)")
 
 headers_r = st.columns([1.2, 1, 1, 1, 1, 1, 1, 1])
 headers_r[0].markdown("**Semana**")
@@ -380,7 +369,7 @@ for sem in semanas_unicas:
 st.markdown("<br>", unsafe_allow_html=True)
 
 # -------------------------------------------------------------------------
-# 7. GRÁFICA DE EVOLUCIÓN DIARIA
+# 7. GRÁFICA DE EVOLUCIÓN DIARIA CONSOLIDADA
 # -------------------------------------------------------------------------
 st.subheader("📈 Evolución Diaria: Histórico Reales vs. Proyección Futura Calibrada")
 
@@ -389,7 +378,6 @@ y_proj = [ultimo_val_real] + y_proj_future
 
 fig = go.Figure()
 
-# Línea Histórica Reales
 fig.add_trace(go.Scatter(
     x=df_60d['ds_date'], y=df_60d['orders_real'],
     mode='lines+markers', name='Órdenes Reales (Histórico)',
@@ -397,14 +385,12 @@ fig.add_trace(go.Scatter(
     marker=dict(size=4)
 ))
 
-# Línea Forecast Base
 fig.add_trace(go.Scatter(
     x=df_60d['ds_date'], y=df_60d['orders_forecast_rooster'],
     mode='lines', name='Forecast Rooster Base',
     line=dict(color='#F59E0B', width=2, dash='dash')
 ))
 
-# Línea Roja Proyectada
 fig.add_trace(go.Scatter(
     x=x_proj, y=y_proj,
     mode='lines+markers', name=f'Proyección Modelo ({dias_a_proyectar} días)',
