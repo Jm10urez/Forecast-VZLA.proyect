@@ -39,10 +39,18 @@ st.markdown("""
 # -------------------------------------------------------------------------
 # 2. CONEXIÓN A BIGQUERY Y CARGA DE DATOS (CON CACHÉ)
 # -------------------------------------------------------------------------
-@st.cache_data(ttl=3600)  # Guarda datos en caché por 1 hora
+# -------------------------------------------------------------------------
+# 2. CARGA DE DATOS DESDE BIGQUERY CON SECRETS
+# -------------------------------------------------------------------------
+@st.cache_data(ttl=3600)
 def cargar_datos_bigquery():
-    project_id = 'peya-venezuela'
-    client = bigquery.Client(project=project_id)
+    # Verifica si existen credenciales configuradas en Secrets
+    if "gcp_service_account" in st.secrets:
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        client = bigquery.Client.from_service_account_info(creds_dict)
+    else:
+        # Modo por defecto para autenticación local
+        client = bigquery.Client(project='peya-venezuela')
 
     sql_query = """
     WITH 
@@ -91,10 +99,6 @@ def cargar_datos_bigquery():
             
     df['ds_date'] = pd.to_datetime(df['ds_date'])
     return df
-
-# Carga de datos con indicador de progreso
-with st.spinner("Conectando con BigQuery (peya-venezuela)..."):
-    df_real = cargar_datos_bigquery()
 
 # -------------------------------------------------------------------------
 # 3. CONTROLES EN LA BARRA LATERAL (SIDEBAR)
