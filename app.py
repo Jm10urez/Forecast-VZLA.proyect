@@ -4,7 +4,7 @@ import numpy as np
 import plotly.graph_objects as go
 
 # -------------------------------------------------------------------------
-# 1. CONFIGURACIÓN DE PÁGINA Y ESTILOS CSS PROFESIONALES
+# 1. CONFIGURACIÓN DE PÁGINA
 # -------------------------------------------------------------------------
 st.set_page_config(
     page_title="Simulador Operativo | PedidosYa VE",
@@ -26,79 +26,6 @@ st.markdown("""
     div[data-testid="stSidebar"] {
         background-color: #FFFFFF;
         border-right: 1px solid #E2E8F0;
-    }
-    
-    /* ESTILOS PARA MATRIZ ROOSTER PROFESIONAL */
-    .rooster-table {
-        width: 100%;
-        border-collapse: separate;
-        border-spacing: 6px;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    }
-    .rooster-table th {
-        background-color: #0F172A;
-        color: #94A3B8;
-        padding: 10px;
-        font-size: 13px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        border-radius: 6px;
-        text-align: center;
-    }
-    .rooster-table td {
-        background-color: #1E293B;
-        color: #F8FAFC;
-        padding: 10px;
-        border-radius: 8px;
-        vertical-align: top;
-        min-width: 120px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    }
-    .week-cell {
-        background-color: #0F172A !important;
-        color: #38BDF8 !important;
-        font-weight: bold;
-        vertical-align: middle !important;
-        text-align: center;
-        font-size: 13px;
-    }
-    .cell-box {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-    }
-    .val-row {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        font-size: 12px;
-    }
-    .lbl-txt { color: #94A3B8; font-size: 11px; }
-    .val-base { color: #E2E8F0; font-weight: 500; }
-    .val-model { color: #38BDF8; font-weight: 700; font-size: 13px; }
-    
-    .badge-pos {
-        background-color: rgba(16, 185, 129, 0.15);
-        color: #34D399;
-        padding: 2px 6px;
-        border-radius: 4px;
-        font-weight: 700;
-        font-size: 11px;
-    }
-    .badge-neg {
-        background-color: rgba(239, 68, 68, 0.15);
-        color: #F87171;
-        padding: 2px 6px;
-        border-radius: 4px;
-        font-weight: 700;
-        font-size: 11px;
-    }
-    .empty-cell {
-        color: #475569;
-        text-align: center;
-        padding: 15px !important;
-        font-size: 14px;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -206,7 +133,7 @@ elif sel_horizonte == 'Próximos 15 días':
 else:
     dias_a_proyectar = 30
 
-# DOW BASELINE
+# DOW BASELINE DE ÚLTIMAS 4 SEMANAS
 df_28d_clean = df_valid_reales[df_valid_reales['ds_date'] >= (max_fecha_real - pd.Timedelta(days=28))].copy()
 df_28d_clean['dow'] = df_28d_clean['ds_date'].dt.dayofweek
 
@@ -266,14 +193,13 @@ kpi3.metric("🎯 Target UTR", f"{target_utr:.2f}")
 st.markdown("---")
 
 # -------------------------------------------------------------------------
-# 6. CONSTRUCCIÓN DE MATRIZ HTML LIMPIA Y ELEGANTE
+# 6. MATRIZ ROOSTER CON NATIVE STREAMLIT LAYOUT (IMPECABLE Y LIMPIO)
 # -------------------------------------------------------------------------
 st.subheader("📅 Matriz Semanal Comparativa (Rooster Base vs. Modelo Ajustado)")
 
 df_grid_hist = df_hist[['ds_date', 'orders_forecast_rooster', 'orders_real']].copy()
 df_grid_hist.columns = ['ds_date', 'rooster', 'sugerido']
 
-# Base Rooster futura de referencia (Promedio histórico reciente si no hay forecast futuro disponible)
 val_rooster_ref = df_grid_hist['rooster'].tail(14).mean() if len(df_grid_hist) > 0 else 6801.0
 
 df_grid_fut = pd.DataFrame({
@@ -293,50 +219,38 @@ dias_espanol = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado',
 
 semanas_unicas = sorted(df_grid_all['week_start'].unique(), reverse=True)[:5]
 
-# Renderizar Tabla HTML nativa con CSS
-html_table = '<table class="rooster-table">'
-html_table += '<thead><tr><th>Semanas</th>' + ''.join([f'<th>{d}</th>' for d in dias_espanol]) + '</tr></thead><tbody>'
+# Renderizado mediante Columnas de Streamlit nativo (Cero errores de HTML/string)
+headers = st.columns([1.2, 1, 1, 1, 1, 1, 1, 1])
+headers[0].markdown("**Semana**")
+for idx, d_es in enumerate(dias_espanol):
+    headers[idx + 1].markdown(f"**{d_es}**")
+
+st.divider()
 
 for sem in semanas_unicas:
-    html_table += f'<tr><td class="week-cell">{sem.strftime("%Y-%m-%d")}</td>'
+    cols = st.columns([1.2, 1, 1, 1, 1, 1, 1, 1])
+    cols[0].markdown(f"🗓️ **{sem.strftime('%Y-%m-%d')}**")
+    
     df_sem = df_grid_all[df_grid_all['week_start'] == sem]
     
-    for dow in dias_semana:
+    for idx, dow in enumerate(dias_semana):
         match = df_sem[df_sem['dow_name'] == dow]
+        col_target = cols[idx + 1]
+        
         if len(match) > 0:
             val_rooster = match['rooster'].values[0]
             val_sug = match['sugerido'].values[0]
             var_pct = ((val_sug - val_rooster) / val_rooster * 100) if val_rooster > 0 else 0.0
             
             signo = "+" if var_pct >= 0 else ""
-            badge_class = "badge-pos" if var_pct >= 0 else "badge-neg"
+            color_pct = "green" if var_pct >= 0 else "red"
             
-            cell_content = f'''
-            <td>
-                <div class="cell-box">
-                    <div class="val-row">
-                        <span class="lbl-txt">Rooster:</span>
-                        <span class="val-base">{int(val_rooster):,}</span>
-                    </div>
-                    <div class="val-row">
-                        <span class="lbl-txt">Ajustado:</span>
-                        <span class="val-model">{int(val_sug):,}</span>
-                    </div>
-                    <div style="text-align: right; margin-top: 4px;">
-                        <span class="{badge_class}">{signo}{var_pct:.1f}%</span>
-                    </div>
-                </div>
-            </td>
-            '''
-            html_table += cell_content
+            with col_target.container(border=True):
+                st.caption(f"Rooster: **{int(val_rooster):,}**")
+                st.markdown(f"**{int(val_sug):,}**")
+                st.markdown(f":{color_pct}[**{signo}{var_pct:.1f}%**]")
         else:
-            html_table += '<td class="empty-cell">-</td>'
-            
-    html_table += '</tr>'
-
-html_table += '</tbody></table>'
-
-st.markdown(html_table, unsafe_allow_html=True)
+            col_target.caption("-")
 
 st.markdown("<br>", unsafe_allow_html=True)
 
