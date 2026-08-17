@@ -34,7 +34,7 @@ if 'eventos_custom' not in st.session_state:
     st.session_state['eventos_custom'] = []
 
 # -------------------------------------------------------------------------
-# 2. CARGA DE DATOS DESDE ARCHIVO LOCAL CSV CON DETECCIÓN FLEXIBLE DE COLUMNAS
+# 2. CARGA DE DATOS DESDE ARCHIVO LOCAL CSV CON DETECCIÓN ULTRA-AMPLIA
 # -------------------------------------------------------------------------
 @st.cache_data
 def cargar_datos_csv():
@@ -49,17 +49,18 @@ def cargar_datos_csv():
 
 df_real = cargar_datos_csv()
 
-# Función para encontrar columnas de forma flexible (case-insensitive)
-def buscar_columna(df, posibles_nombres):
-    cols_lower = {c.lower(): c for c in df.columns}
-    for p in posibles_nombres:
-        if p.lower() in cols_lower:
-            return cols_lower[p.lower()]
+# Escanear columnas reales del CSV para zonas y horas (variaciones comunes en PeYa)
+def detectar_columna(df, candidatos):
+    cols_actuales = [str(c).strip() for c in df.columns]
+    cols_map = {c.lower(): c for c in cols_actuales}
+    for cand in candidatos:
+        if cand.lower() in cols_map:
+            return cols_map[cand.lower()]
     return None
 
-col_ciudad = buscar_columna(df_real, ['city_name', 'city', 'ciudad'])
-col_zona = buscar_columna(df_real, ['zone_name', 'zone', 'subzone_name', 'subzone', 'zona'])
-col_hora = buscar_columna(df_real, ['hour', 'hora', 'time_block', 'time_hour', 'time'])
+col_ciudad = detectar_columna(df_real, ['city_name', 'city', 'ciudad', 'city_label'])
+col_zona = detectar_columna(df_real, ['zone_name', 'subzone_name', 'logistic_zone', 'zone', 'subzone', 'zona', 'area', 'logistic_zone_name'])
+col_hora = detectar_columna(df_real, ['hour', 'time_block', 'time_hour', 'hora', 'time', 'time_slot', 'hour_interval', 'block_hour'])
 
 # -------------------------------------------------------------------------
 # 3. CONTROLES SIDEBAR (CONFIGURACIÓN GLOBAL Y EVENTOS AD-HOC)
@@ -78,7 +79,7 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("🌧️ Modificadores Ad-Hoc / Clustered Events")
 
 with st.sidebar.expander("➕ Agregar Impacto Específico por Día", expanded=False):
-    df_valid_temp = df_real[df_real['orders_real'] > 500]
+    df_valid_temp = df_real[df_real['orders_real'] > 500] if 'orders_real' in df_real.columns else df_real
     max_date_temp = df_valid_temp['ds_date'].max() if len(df_valid_temp) > 0 else df_real['ds_date'].max()
     dias_opciones = [(max_date_temp + pd.Timedelta(days=i+1)).strftime('%Y-%m-%d') for i in range(30)]
     
@@ -243,32 +244,46 @@ kpi5.metric(
 st.markdown("---")
 
 # -------------------------------------------------------------------------
-# 6. FILTROS EXCLUSIVOS PARA LAS TABLAS (CIUDAD, ZONA Y HORA SIEMPRE VISIBLES)
+# 6. FILTROS EXCLUSIVOS CON EXTRACCIÓN GARANTIZADA DE ZONA Y HORA
 # -------------------------------------------------------------------------
 with st.expander("🔍 **Filtros Exclusivos para Tablas de Forecast y Sugerido**", expanded=True):
     f_col1, f_col2, f_col3 = st.columns(3)
     
     # 1. Filtro Ciudad
     if col_ciudad:
-        ciudades_lista = sorted([str(c) for c in df_real[col_ciudad].dropna().unique() if str(c) not in ['None', 'nan']])
+        ciudades_lista = sorted([str(c) for c in df_real[col_ciudad].dropna().unique() if str(c) not in ['None', 'nan', '0', '0.0']])
     else:
         ciudades_lista = []
     sel_ciudad_tbl = f_col1.selectbox("🏙️ Ciudad (Tablas):", ['TODAS'] + ciudades_lista)
 
     df_temp_ciudad = df_real if (not col_ciudad or sel_ciudad_tbl == 'TODAS') else df_real[df_real[col_ciudad] == sel_ciudad_tbl]
 
-    # 2. Filtro Zona
+    # 2. Filtro Zona (Garantizado)
     if col_zona:
-        zonas_lista = sorted([str(z) for z in df_temp_ciudad[col_zona].dropna().unique() if str(z) not in ['None', 'nan']])
+        zonas_lista = sorted([str(z) for z in df_temp_ciudad[col_zona].dropna().unique() if str(z) not in ['None', 'nan', '0', '0.0']])
     else:
-        zonas_lista = []
+        # Si no detectó nombre estándar, busca columnas string que contengan 'El Hatillo', 'Chacao', etc.
+        cols_posibles_zona = [c for c in df_real.columns if df_real[c].astype(str).str.contains('Hatillo|Chacao|Baruta|Las Mercedes', case=False, regex=True).any()]
+        if cols_posibles_zona:
+            col_zona = cols_posibles_zona[0]
+            zonas_lista = sorted([str(z) for z in df_temp_ciudad[col_zona].dropna().unique() if str(z) not in ['None', 'nan', '0', '0.0']])
+        else:
+            zonas_lista = []
+
     sel_zona_tbl = f_col2.selectbox("📍 Zona / Subzona (Tablas):", ['TODAS'] + zonas_lista)
 
-    # 3. Filtro Hora
+    # 3. Filtro Hora (Garantizado)
     if col_hora:
         horas_lista = sorted([str(h) for h in df_temp_ciudad[col_hora].dropna().unique() if str(h) not in ['None', 'nan']])
     else:
-        horas_lista = []
+        # Buscar columnas numéricas que contengan valores de 0 a 23
+        cols_posibles_hora = [c for c in df_real.columns if df_real[c].dtype in ['int64', 'float64'] and df_real[c].max() <= 23 and df_real[c].min() >= 0]
+        if cols_posibles_hora:
+            col_hora = cols_posibles_hora[0]
+            horas_lista = sorted([str(int(h)) for h in df_temp_ciudad[col_hora].dropna().unique() if pd.notna(h)])
+        else:
+            horas_lista = []
+
     sel_hora_tbl = f_col3.selectbox("⏰ Hora (Tablas):", ['TODAS'] + horas_lista)
 
 # Aplicar filtrado a los datos
@@ -278,7 +293,7 @@ if col_ciudad and sel_ciudad_tbl != 'TODAS':
 if col_zona and sel_zona_tbl != 'TODAS':
     df_filtered_tbl = df_filtered_tbl[df_filtered_tbl[col_zona] == sel_zona_tbl]
 if col_hora and sel_hora_tbl != 'TODAS':
-    df_filtered_tbl = df_filtered_tbl[df_filtered_tbl[col_hora] == sel_hora_tbl]
+    df_filtered_tbl = df_filtered_tbl[df_filtered_tbl[col_hora].astype(str) == str(sel_hora_tbl)]
 
 df_hist_tbl = df_filtered_tbl.groupby('ds_date').agg({
     'orders_forecast_rooster': 'sum',
